@@ -63,10 +63,6 @@ namespace xp
                 handle_.destroy();
             }
         }
-        auto value()
-        {
-            return handle_.promise().value;
-        }
         bool done()
         {
             return handle_.done();
