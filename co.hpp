@@ -17,10 +17,10 @@ namespace xp
         void await_resume() noexcept {}
     };
 
-    struct FuncAwaiter
+    struct AwaiterFunc
     {
         std::function<bool()> ready;
-        FuncAwaiter(std::function<bool()> r = [] { return false; })
+        AwaiterFunc(std::function<bool()> r = [] { return false; })
             : ready{r}
         {
         }
@@ -29,23 +29,27 @@ namespace xp
         void await_resume() noexcept {}
     };
 
-    template <typename T = std::any>
-    class Task
+    template <typename T = void>
+    class Task;
+
+    template <>
+    class Task<void>
     {
     public:
-        using value_type = T;
         struct promise_type;
         using coroutine_handle = std::coroutine_handle<promise_type>;
-
-        Task(coroutine_handle handle = nullptr) : handle_(handle) {}
-        Task(Task &&task) : handle_(task.handle_)
+        Task() noexcept : handle_(nullptr) {}
+        Task(coroutine_handle handle) noexcept : handle_(handle) {}
+        Task(Task &&task) noexcept : handle_(task.handle_)
         {
             task.handle_ = nullptr;
         }
-        Task &operator=(Task &&task)
+        Task &operator=(Task &&task) noexcept
         {
             if (handle_ != nullptr)
+            {
                 handle_.destroy();
+            }
             handle_ = task.handle_;
             task.handle_ = nullptr;
             return *this;
@@ -55,7 +59,9 @@ namespace xp
         ~Task()
         {
             if (handle_ != nullptr)
+            {
                 handle_.destroy();
+            }
         }
         auto value()
         {
@@ -68,7 +74,9 @@ namespace xp
         void resume()
         {
             if (!handle_.done() && handle_ != nullptr)
+            {
                 handle_.resume();
+            }
         }
         void operator()()
         {
@@ -77,7 +85,9 @@ namespace xp
         void resume(epoll_event)
         {
             if (!handle_.done() && handle_ != nullptr)
+            {
                 handle_.resume();
+            }
         }
         void operator()(epoll_event)
         {
@@ -89,12 +99,83 @@ namespace xp
             handle_ = nullptr;
         }
 
-    private:
+    protected:
         coroutine_handle handle_;
     };
 
     template <typename T>
-    struct Task<T>::promise_type
+    class Task : public Task<>
+    {
+    public:
+        using value_type = T;
+        using coroutine_handle = std::coroutine_handle<promise_type>;
+        struct promise_type;
+
+        Task(coroutine_handle handle = nullptr) noexcept : handle_(handle) {}
+        Task(Task &&task) noexcept : handle_(task.handle_)
+        {
+            task.handle_ = nullptr;
+        }
+        Task &operator=(Task &&task) noexcept
+        {
+            if (handle_ != nullptr)
+            {
+                handle_.destroy();
+            }
+            handle_ = task.handle_;
+            task.handle_ = nullptr;
+            return *this;
+        }
+        Task &operator=(const Task &) = delete;
+        Task(const Task &) = delete;
+        ~Task()
+        {
+            if (handle_ != nullptr)
+            {
+                handle_.destroy();
+            }
+        }
+        auto value()
+        {
+            return handle_.promise().value;
+        }
+        bool done()
+        {
+            return handle_.done();
+        }
+        void resume()
+        {
+            if (!handle_.done() && handle_ != nullptr)
+            {
+                handle_.resume();
+            }
+        }
+        void operator()()
+        {
+            resume();
+        }
+        void resume(epoll_event)
+        {
+            if (!handle_.done() && handle_ != nullptr)
+            {
+                handle_.resume();
+            }
+        }
+        void operator()(epoll_event)
+        {
+            resume();
+        }
+        void destory()
+        {
+            handle_.destroy();
+            handle_ = nullptr;
+        }
+
+    protected:
+        coroutine_handle handle_;
+    };
+
+    struct Task<>::promise_type
     {
         using coroutine_handle = std::coroutine_handle<promise_type>;
         auto get_return_object()
@@ -110,19 +191,26 @@ namespace xp
         {
             return std::suspend_always();
         }
-        auto yield_value(T t)
-        {
-            //value.emplace(std::move(t));
-            value = std::move(t);
-            return std::suspend_always();
-        }
         void return_void() {}
         void unhandled_exception()
         {
-            trace();
             std::terminate();
         }
-        T value;
+    };
+
+    template <typename T>
+    struct Task<T>::promise_type : public Task<>::promise_type
+    {
+        auto yield_value(T t)
+        {
+            value_ = std::move(t);
+            return std::suspend_always();
+        }
+        auto value()
+        {
+            return value_;
+        }
+        T value_;
     };
 
     template <typename Value>
@@ -193,7 +281,6 @@ private:
 };
 
 */
-
 
 }
 #endif // !CO_HPP_
