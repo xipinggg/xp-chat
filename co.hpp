@@ -9,205 +9,240 @@
 
 namespace xp
 {
-
-    struct Awaiter
+    template <typename P>
+    concept Promise = requires(P p)
     {
-        bool await_ready() const noexcept { return false; }
-        void await_suspend(std::coroutine_handle<> handle) noexcept {}
-        void await_resume() noexcept {}
+        p.get_return_object();
+        p.initial_suspend();
+        p.final_suspend();
+        p.return_void();
+        p.unhandled_exception();
     };
 
-    struct AwaiterFunc
+    inline namespace V1
     {
-        std::function<bool()> ready;
-        AwaiterFunc(std::function<bool()> r = [] { return false; })
-            : ready{r}
+        struct Awaiter
         {
-        }
-        bool await_ready() const noexcept { return ready(); }
-        void await_suspend(std::coroutine_handle<> handle) noexcept {}
-        void await_resume() noexcept {}
-    };
+            bool await_ready() const noexcept { return false; }
+            void await_suspend(std::coroutine_handle<> handle) noexcept {}
+            void await_resume() noexcept {}
+        };
 
-    template <typename T = void>
-    class Task;
+        struct AwaiterFunc
+        {
+            std::function<bool()> ready;
+            AwaiterFunc(std::function<bool()> r = [] { return false; })
+                : ready{r}
+            {
+            }
+            bool await_ready() const noexcept { return ready(); }
+            void await_suspend(std::coroutine_handle<> handle) noexcept {}
+            void await_resume() noexcept {}
+        };
 
-    template <>
-    class Task<void>
+        template <typename T = void>
+        class Task;
+
+        template <>
+        class Task<void>
+        {
+        public:
+            struct promise_type;
+            using coroutine_handle = std::coroutine_handle<promise_type>;
+            Task() noexcept : handle_(nullptr) {}
+            Task(coroutine_handle handle) noexcept : handle_(handle) {}
+            Task(Task &&task) noexcept : handle_(task.handle_)
+            {
+                task.handle_ = nullptr;
+            }
+            Task &operator=(Task &&task) noexcept
+            {
+                if (handle_) [[liakely]]
+                {
+                    handle_.destroy();
+                }
+                handle_ = task.handle_;
+                task.handle_ = nullptr;
+                return *this;
+            }
+            Task &operator=(const Task &) = delete;
+            Task(const Task &) = delete;
+            ~Task()
+            {
+                if (handle_) [[likely]]
+                {
+                    handle_.destroy();
+                }
+            }
+            bool done() noexcept
+            {
+                return handle_.done();
+            }
+            void resume() noexcept
+            {
+                if (handle_ && !handle_.done())
+                {
+                    handle_.resume();
+                }
+            }
+            void destory() noexcept
+            {
+                if (handle_) [[likely]]
+                {
+                    handle_.destroy();
+                    handle_ = nullptr;
+                }
+            }
+
+        protected:
+            coroutine_handle handle_;
+        };
+
+        template <typename T>
+        class Task : public Task<>
+        {
+        public:
+            using value_type = T;
+            using coroutine_handle = std::coroutine_handle<promise_type>;
+            struct promise_type;
+
+            using Task<>::Task;
+
+            auto value() noexcept
+            {
+                return handle_.promise().value;
+            }
+        };
+
+        struct Task<>::promise_type
+        {
+            using coroutine_handle = std::coroutine_handle<promise_type>;
+            auto get_return_object()
+            {
+                return coroutine_handle::from_promise(*this);
+            }
+            auto initial_suspend()
+            {
+                return std::suspend_never();
+            }
+            // Ignore this error.It can work.
+            auto final_suspend()
+            {
+                return std::suspend_always();
+            }
+            void return_void() {}
+            void unhandled_exception()
+            {
+                std::terminate();
+            }
+        };
+
+        template <typename T>
+        struct Task<T>::promise_type : public Task<>::promise_type
+        {
+            auto yield_value(T t)
+            {
+                value_ = std::move(t);
+                return std::suspend_always();
+            }
+            auto value()
+            {
+                return value_;
+            }
+            T value_;
+        };
+    }
+
+    namespace V2
     {
-    public:
-        struct promise_type;
-        using coroutine_handle = std::coroutine_handle<promise_type>;
-        Task() noexcept : handle_(nullptr) {}
-        Task(coroutine_handle handle) noexcept : handle_(handle) {}
-        Task(Task &&task) noexcept : handle_(task.handle_)
+        struct defualt_promise_type
         {
-            task.handle_ = nullptr;
-        }
-        Task &operator=(Task &&task) noexcept
-        {
-            if (handle_ != nullptr)
+            using coroutine_handle = std::coroutine_handle<defualt_promise_type>;
+            auto get_return_object() noexcept
             {
-                handle_.destroy();
+                return coroutine_handle::from_promise(*this);
             }
-            handle_ = task.handle_;
-            task.handle_ = nullptr;
-            return *this;
-        }
-        Task &operator=(const Task &) = delete;
-        Task(const Task &) = delete;
-        ~Task()
-        {
-            if (handle_ != nullptr)
+            auto initial_suspend() const noexcept
             {
-                handle_.destroy();
+                return std::suspend_never();
             }
-        }
-        bool done()
-        {
-            return handle_.done();
-        }
-        void resume()
-        {
-            if (!handle_.done() && handle_ != nullptr)
+            auto final_suspend() const noexcept
             {
-                handle_.resume();
+                return std::suspend_always();
             }
-        }
-        void operator()()
-        {
-            resume();
-        }
-        void resume(epoll_event)
-        {
-            if (!handle_.done() && handle_ != nullptr)
+            void return_void() const noexcept
             {
-                handle_.resume();
             }
-        }
-        void operator()(epoll_event)
-        {
-            resume();
-        }
-        void destory()
-        {
-            handle_.destroy();
-            handle_ = nullptr;
-        }
+            void unhandled_exception() const noexcept
+            {
+                std::terminate();
+            }
+        };
 
-    protected:
-        coroutine_handle handle_;
-    };
-
-    template <typename T>
-    class Task : public Task<>
-    {
-    public:
-        using value_type = T;
-        using coroutine_handle = std::coroutine_handle<promise_type>;
-        struct promise_type;
-
-        Task(coroutine_handle handle = nullptr) noexcept : handle_(handle) {}
-        Task(Task &&task) noexcept : handle_(task.handle_)
+        struct defualt_awaiter
         {
-            task.handle_ = nullptr;
-        }
-        Task &operator=(Task &&task) noexcept
+            static bool await_ready() noexcept { return false; }
+            static void await_suspend(std::coroutine_handle<>) noexcept {}
+            static void await_resume() noexcept {}
+        };
+
+        template <typename T = void>
+        struct Task;
+
+        template <>
+        struct Task<void>
         {
-            if (handle_ != nullptr)
+            using promise_type = defualt_promise_type;
+            using coroutine_handle = std::coroutine_handle<promise_type>;
+            Task() noexcept : handle_(nullptr) {}
+            Task(coroutine_handle handle) noexcept : handle_(handle) {}
+            Task(Task &&task) noexcept : handle_(task.handle_)
             {
-                handle_.destroy();
+                task.handle_ = nullptr;
             }
-            handle_ = task.handle_;
-            task.handle_ = nullptr;
-            return *this;
-        }
-        Task &operator=(const Task &) = delete;
-        Task(const Task &) = delete;
-        ~Task()
-        {
-            if (handle_ != nullptr)
+            Task &operator=(Task &&task) noexcept
             {
-                handle_.destroy();
+                if (handle_) [[liakely]]
+                {
+                    handle_.destroy();
+                }
+                handle_ = task.handle_;
+                task.handle_ = nullptr;
+                return *this;
             }
-        }
-        auto value()
-        {
-            return handle_.promise().value;
-        }
-        bool done()
-        {
-            return handle_.done();
-        }
-        void resume()
-        {
-            if (!handle_.done() && handle_ != nullptr)
+            Task &operator=(const Task &) = delete;
+            Task(const Task &) = delete;
+            ~Task()
             {
-                handle_.resume();
+                if (handle_) [[likely]]
+                {
+                    handle_.destroy();
+                }
             }
-        }
-        void operator()()
-        {
-            resume();
-        }
-        void resume(epoll_event)
-        {
-            if (!handle_.done() && handle_ != nullptr)
+            bool done() noexcept
             {
-                handle_.resume();
+                return handle_.done();
             }
-        }
-        void operator()(epoll_event)
-        {
-            resume();
-        }
-        void destory()
-        {
-            handle_.destroy();
-            handle_ = nullptr;
-        }
+            void resume() noexcept
+            {
+                if (handle_ && !handle_.done())
+                {
+                    handle_.resume();
+                }
+            }
+            void destory() noexcept
+            {
+                if (handle_) [[likely]]
+                {
+                    handle_.destroy();
+                    handle_ = nullptr;
+                }
+            }
+            coroutine_handle handle_;
+        };
+    }
 
-    protected:
-        coroutine_handle handle_;
-    };
 
-    struct Task<>::promise_type
-    {
-        using coroutine_handle = std::coroutine_handle<promise_type>;
-        auto get_return_object()
-        {
-            return coroutine_handle::from_promise(*this);
-        }
-        auto initial_suspend()
-        {
-            return std::suspend_never();
-        }
-        // Ignore this error.It can work.
-        auto final_suspend()
-        {
-            return std::suspend_always();
-        }
-        void return_void() {}
-        void unhandled_exception()
-        {
-            std::terminate();
-        }
-    };
-
-    template <typename T>
-    struct Task<T>::promise_type : public Task<>::promise_type
-    {
-        auto yield_value(T t)
-        {
-            value_ = std::move(t);
-            return std::suspend_always();
-        }
-        auto value()
-        {
-            return value_;
-        }
-        T value_;
-    };
 
     template <typename Value>
     class Channel
