@@ -24,10 +24,17 @@ namespace xp
         return fmt::format("[{}] {} ## {} {} {}\n",
                            level, message, location.function_name(), location.line(), location.file_name());
     }
-
-    void log(const std::string_view message = "", const std::string level = "debug",
+    constexpr bool log_filter(const std::string_view level)
+    {
+        return false;
+    }
+    void log(const std::string_view message = "", const std::string_view level = "debug",
              const std::experimental::source_location location = std::experimental::source_location::current()) noexcept
     {
+        if (log_filter(level)) 
+        {
+            return;
+        }
         auto log = make_log(message, level, location);
         fmt::print(log);
     }

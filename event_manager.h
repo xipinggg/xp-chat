@@ -31,13 +31,13 @@ namespace xp
             */
         return event;
     }
+
     class Epoller
     {
     public:
         Epoller() : epollfd_{epoll_create1(EPOLL_CLOEXEC)}
         {
-            log();
-            assert(epollfd_ >= 0);
+            log(fmt::format("epollfd={}", epollfd_));
             if (epollfd_ < 0)
                 throw std::bad_exception{};
         }
@@ -47,20 +47,24 @@ namespace xp
         Epoller &operator=(Epoller &&) = delete;
         ~Epoller()
         {
-            log();
+            log(fmt::format("close epollfd : {}", epollfd_));
             ::close(epollfd_);
         }
-        int epoll(std::vector<epoll_event> &events)
+        int ctl(const int option, const int fd, epoll_event *event)
+        {
+            log(fmt::format("option={},fd={}", option, fd));
+            std::lock_guard<decltype(mtx_)> lg{mtx_};
+            return ::epoll_ctl(epollfd_, option, fd, event);
+        }
+        int epoll(std::vector<epoll_event> &events, const int timeout = 0)
         {
             log();
-            constexpr int TIMEOUT = -1;
             auto *buf = events.data();
             assert(buf);
             const int max_num = events.capacity();
             assert(max_num > 0);
-            std::lock_guard<std::mutex> lg{mtx_};
-            const int events_num = epoll_wait(epollfd_, buf, max_num, TIMEOUT);
-            return events_num;
+            std::lock_guard<decltype(mtx_)> lg{mtx_};
+            return epoll_wait(epollfd_, buf, max_num, timeout);
         }
         std::span<epoll_event> epoll(const int num = 0)
         {
@@ -82,18 +86,13 @@ namespace xp
             const int events_num = epoll_wait(epollfd_, buf, max_num, TIMEOUT);
             return {events_.begin(), events_num};
         }
-        int ctl(const int option, const int fd, epoll_event *event)
-        {
-            log();
-            std::lock_guard<std::mutex> lg{mtx_};
-            return ::epoll_ctl(epollfd_, option, fd, event);
-        }
 
     private:
         int epollfd_;
         std::vector<epoll_event> events_;
         std::mutex mtx_;
     };
+
     class Timer
     {
     public:
@@ -182,6 +181,7 @@ namespace xp
     {
     public:
         using task_type = std::function<void()>;
+        using handle_event_type = std::function<int(epoll_event)>;
         enum ctl_option
         {
             add = EPOLL_CTL_ADD,
@@ -189,15 +189,22 @@ namespace xp
             mod = EPOLL_CTL_MOD,
         };
         EventLoop()
-            : fd_{eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)}
         {
-            if (fd_ < 0)
-                throw std::bad_exception{};
-
-            auto data = epoll_data_t{0};
-            auto epevent = make_epoll_event(data);
-            ctl(ctl_option::add, fd_, &epevent);
+            log();
         }
+        EventLoop(handle_event_type handle_event)
+            : fd_{eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)}, handle_event_{handle_event}
+        {
+            log(fmt::format("eventfd={}", fd_));
+            if (fd_ < 0)
+            {
+                throw std::bad_exception{};
+            }
+        }
+        EventLoop(const EventLoop &) = delete;
+        EventLoop &operator=(const EventLoop &) = delete;
+        EventLoop(EventLoop &&) = delete;
+        EventLoop &operator=(EventLoop &&) = delete;
         ~EventLoop()
         {
             ::close(fd_);
@@ -211,24 +218,22 @@ namespace xp
             {
                 sleep(1);
                 int num = epoller_.epoll(events);
-                if (num < 0) [[unlikely]]
-                    log("epoll result : -1", "error");
+                log(fmt::format("epoll result : {}", num), "info");
                 //std::cout << std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) <<std::endl;
-                const auto lg = fmt::format("epoll num : {}", num);
-                log(lg, "info");
                 for (int i = 0; i < num; ++i)
                 {
                     auto epevent = events[i];
-                    handle_event_(epevent);
+                    if (0 > handle_event_(epevent))
+                    {
+                    }
                 }
             }
         }
         int ctl(ctl_option option, int fd, epoll_event *event)
         {
-            log();
+            xp::log();
             return epoller_.ctl(option, fd, event);
         }
-
         /*template <class Function, class... Args>
         std::future<typename std::result_of<Function(Args...)>::type>
         add_task(Function &&fcn, Args &&...args)
@@ -244,23 +249,27 @@ namespace xp
         void add_task(std::function<void()> task)
         {
         }
+        int set_wakeup_handler(void *ptr)
+        {
+            xp::log();
+            auto data = epoll_data_t{.ptr = ptr};
+            auto epevent = make_epoll_event(data);
+            return ctl(ctl_option::add, fd_, &epevent);
+        }
         bool wakeup()
         {
+            xp::log();
             return eventfd_write(fd_, 1) >= 0;
         }
-        void on_wakeup(epoll_event epevent)
-        {
-            uint64_t count{0};
-            eventfd_read(fd_, &count);
-        }
-        
+        int fd() const noexcept { return fd_; }
+
     private:
-        int fd_;
+        int fd_ = -1;
         std::vector<epoll_event> events_;
         std::list<task_type> tasks_;
         std::mutex mtx_;
         xp::Epoller epoller_;
-        std::function<void(epoll_event)> handle_event_;
+        handle_event_type handle_event_;
     };
 }
 

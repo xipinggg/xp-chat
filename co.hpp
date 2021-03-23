@@ -6,11 +6,13 @@
 #include <bits/stdc++.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/timerfd.h>
+#include <sys/eventfd.h>
 
 namespace xp
 {
     template <typename P>
-    concept Promise = requires(P p)
+    concept PromiseType = requires(P p)
     {
         p.get_return_object();
         p.initial_suspend();
@@ -19,156 +21,42 @@ namespace xp
         p.unhandled_exception();
     };
 
-    inline namespace V1
+    template <typename A>
+    concept AwaiterType = requires(A a)
     {
-        struct Awaiter
+        a.await_ready();
+        a.await_suspend();
+        a.await_resume();
+    };
+
+    inline namespace 
+    {
+        template <typename promise_type = void>
+        struct FinalAwaiter
         {
-            bool await_ready() const noexcept { return false; }
-            void await_suspend(std::coroutine_handle<> handle) noexcept {}
+            std::coroutine_handle<promise_type> waiter;
+            bool await_ready() noexcept { return false; }
+            auto await_suspend(std::coroutine_handle<promise_type> handle) noexcept
+            {
+                return waiter;
+            }
             void await_resume() noexcept {}
         };
 
-        struct AwaiterFunc
+        struct BasicPromise
         {
-            std::function<bool()> ready;
-            AwaiterFunc(std::function<bool()> r = [] { return false; })
-                : ready{r}
-            {
-            }
-            bool await_ready() const noexcept { return ready(); }
-            void await_suspend(std::coroutine_handle<> handle) noexcept {}
-            void await_resume() noexcept {}
-        };
-
-        template <typename T = void>
-        class Task;
-
-        template <>
-        class Task<void>
-        {
-        public:
-            struct promise_type;
-            using coroutine_handle = std::coroutine_handle<promise_type>;
-            Task() noexcept : handle_(nullptr) {}
-            Task(coroutine_handle handle) noexcept : handle_(handle) {}
-            Task(Task &&task) noexcept : handle_(task.handle_)
-            {
-                task.handle_ = nullptr;
-            }
-            Task &operator=(Task &&task) noexcept
-            {
-                if (handle_) [[liakely]]
-                {
-                    handle_.destroy();
-                }
-                handle_ = task.handle_;
-                task.handle_ = nullptr;
-                return *this;
-            }
-            Task &operator=(const Task &) = delete;
-            Task(const Task &) = delete;
-            ~Task()
-            {
-                if (handle_) [[likely]]
-                {
-                    handle_.destroy();
-                }
-            }
-            bool done() noexcept
-            {
-                return handle_.done();
-            }
-            void resume() noexcept
-            {
-                if (handle_ && !handle_.done())
-                {
-                    handle_.resume();
-                }
-            }
-            void destory() noexcept
-            {
-                if (handle_) [[likely]]
-                {
-                    handle_.destroy();
-                    handle_ = nullptr;
-                }
-            }
-
-        protected:
-            coroutine_handle handle_;
-        };
-
-        template <typename T>
-        class Task : public Task<>
-        {
-        public:
-            using value_type = T;
-            using coroutine_handle = std::coroutine_handle<promise_type>;
-            struct promise_type;
-
-            using Task<>::Task;
-
-            auto value() noexcept
-            {
-                return handle_.promise().value;
-            }
-        };
-
-        struct Task<>::promise_type
-        {
-            using coroutine_handle = std::coroutine_handle<promise_type>;
-            auto get_return_object()
-            {
-                return coroutine_handle::from_promise(*this);
-            }
-            auto initial_suspend()
-            {
-                return std::suspend_never();
-            }
-            // Ignore this error.It can work.
-            auto final_suspend()
-            {
-                return std::suspend_always();
-            }
-            void return_void() {}
-            void unhandled_exception()
-            {
-                std::terminate();
-            }
-        };
-
-        template <typename T>
-        struct Task<T>::promise_type : public Task<>::promise_type
-        {
-            auto yield_value(T t)
-            {
-                value_ = std::move(t);
-                return std::suspend_always();
-            }
-            auto value()
-            {
-                return value_;
-            }
-            T value_;
-        };
-    }
-
-    namespace V2
-    {
-        struct defualt_promise_type
-        {
-            using coroutine_handle = std::coroutine_handle<defualt_promise_type>;
+            using coroutine_handle = std::coroutine_handle<BasicPromise>;
             auto get_return_object() noexcept
             {
                 return coroutine_handle::from_promise(*this);
             }
             auto initial_suspend() const noexcept
             {
-                return std::suspend_never();
+                return std::suspend_never{};
             }
             auto final_suspend() const noexcept
             {
-                return std::suspend_always();
+                return std::suspend_never{};
             }
             void return_void() const noexcept
             {
@@ -179,70 +67,93 @@ namespace xp
             }
         };
 
-        struct defualt_awaiter
+        template <PromiseType promise_t = BasicPromise>
+        struct BasicTask
         {
-            static bool await_ready() noexcept { return false; }
-            static void await_suspend(std::coroutine_handle<>) noexcept {}
-            static void await_resume() noexcept {}
-        };
-
-        template <typename T = void>
-        struct Task;
-
-        template <>
-        struct Task<void>
-        {
-            using promise_type = defualt_promise_type;
+            using promise_type = promise_t;
             using coroutine_handle = std::coroutine_handle<promise_type>;
-            Task() noexcept : handle_(nullptr) {}
-            Task(coroutine_handle handle) noexcept : handle_(handle) {}
-            Task(Task &&task) noexcept : handle_(task.handle_)
+            BasicTask() noexcept : handle(nullptr) {}
+            BasicTask(coroutine_handle hd) noexcept : handle(hd) {}
+            BasicTask(promise_type &promise) : handle(std::coroutine_handle<promise_type>::from_promise(promise)) {}
+            BasicTask(BasicTask &&task) noexcept : handle(task.handle)
             {
-                task.handle_ = nullptr;
+                task.handle = nullptr;
             }
-            Task &operator=(Task &&task) noexcept
+            BasicTask &operator=(BasicTask &&task) noexcept
             {
-                if (handle_) [[liakely]]
+                if (handle) [[likely]]
                 {
-                    handle_.destroy();
+                    handle.destroy();
                 }
-                handle_ = task.handle_;
-                task.handle_ = nullptr;
+                handle = task.handle;
+                task.handle = nullptr;
                 return *this;
             }
-            Task &operator=(const Task &) = delete;
-            Task(const Task &) = delete;
-            ~Task()
+            BasicTask &operator=(const BasicTask &) = delete;
+            BasicTask(const BasicTask &) = delete;
+            virtual ~BasicTask()
             {
-                if (handle_) [[likely]]
+                if (handle)
                 {
-                    handle_.destroy();
+                    handle.destroy();
                 }
             }
             bool done() noexcept
             {
-                return handle_.done();
+                return handle.done();
             }
             void resume() noexcept
             {
-                if (handle_ && !handle_.done())
+                if (handle && !handle.done())
                 {
-                    handle_.resume();
+                    handle.resume();
                 }
             }
-            void destory() noexcept
-            {
-                if (handle_) [[likely]]
-                {
-                    handle_.destroy();
-                    handle_ = nullptr;
-                }
-            }
-            coroutine_handle handle_;
+            coroutine_handle handle;
+
+#define usingBasicTask          \
+    using BasicTask::BasicTask; \
+    using BasicTask::operator=
         };
+
+        struct WakeupTask : public BasicTask<BasicPromise>
+        {
+            usingBasicTask;
+            ~WakeupTask() {}
+        };
+        WakeupTask co_wakeup(int fd)
+        {
+            xp::log();
+            co_await std::suspend_always{};
+            while (true)
+            {
+                xp::log(fmt::format("wakeup fd={}",fd));
+                {
+                    if (eventfd_t count{0}; 0 < eventfd_read(fd, &count))
+                    {
+                        co_return;
+                    }
+                }
+                co_await std::suspend_always{};
+            }
+        }
+
+        struct ReadTask : public BasicTask<BasicPromise>
+        {
+            usingBasicTask;
+        };
+        ReadTask co_read(const int fd)
+        {
+        }
+        struct WriteTask : public BasicTask<BasicPromise>
+        {
+        };
+        WriteTask co_write(const int fd, std::vector<char> buf, const int num)
+        {
+            int res = 0;
+            ::send(fd, buf.data(), num, MSG_DONTWAIT);
+        }
     }
-
-
 
     template <typename Value>
     class Channel
@@ -267,17 +178,6 @@ namespace xp
         std::list<Value> data_;
         std::list<int> waiters_;
     };
-
-    Task<int> co_read(const int fd)
-    {
-    }
-
-    Task<int> co_write(const int fd, std::vector<char> buf, const int num)
-    {
-        int res = 0;
-
-        ::send(fd, buf.data(), num, MSG_DONTWAIT);
-    }
 
     /*
 template <typename Promise = void>
