@@ -16,6 +16,8 @@
 #include <functional>
 
 #include "logger.hpp"
+
+extern int sleep_time;
 namespace xp
 {
     epoll_event make_epoll_event(const epoll_data_t data, const uint32_t events = EPOLLIN | EPOLLPRI | EPOLLHUP)
@@ -66,7 +68,7 @@ namespace xp
             std::lock_guard<decltype(mtx_)> lg{mtx_};
             return epoll_wait(epollfd_, buf, max_num, timeout);
         }
-        std::span<epoll_event> epoll(const int num = 0)
+        /*std::span<epoll_event> epoll(const int num = 0)
         {
             log();
             constexpr int TIMEOUT = -1;
@@ -83,9 +85,10 @@ namespace xp
             auto *buf = events_.data();
             assert(buf);
             std::lock_guard<std::mutex> lg{mtx_};
-            const int events_num = epoll_wait(epollfd_, buf, max_num, TIMEOUT);
+            int events_num = epoll_wait(epollfd_, buf, max_num, TIMEOUT);
+            events_num = events_num < 0 ? 0 : events_num;
             return {events_.begin(), events_num};
-        }
+        }*/
 
     private:
         int epollfd_;
@@ -181,7 +184,7 @@ namespace xp
     {
     public:
         using task_type = std::function<void()>;
-        using handle_event_type = std::function<int(epoll_event)>;
+        using event_handler_type = std::function<int(epoll_event)>;
         enum ctl_option
         {
             add = EPOLL_CTL_ADD,
@@ -192,14 +195,18 @@ namespace xp
         {
             log();
         }
-        EventLoop(handle_event_type handle_event)
-            : fd_{eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)}, handle_event_{handle_event}
+        EventLoop(event_handler_type event_handler,std::function<void *(int)> get_wakeup_handler)
+            : fd_{eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)}, event_handler_{event_handler}
         {
             log(fmt::format("eventfd={}", fd_));
             if (fd_ < 0)
             {
                 throw std::bad_exception{};
             }
+            auto ptr = get_wakeup_handler(fd_);
+            auto data = epoll_data_t{.ptr = ptr};
+            auto epevent = make_epoll_event(data);
+            ctl(ctl_option::add, fd_, &epevent);
         }
         EventLoop(const EventLoop &) = delete;
         EventLoop &operator=(const EventLoop &) = delete;
@@ -209,21 +216,22 @@ namespace xp
         {
             ::close(fd_);
         }
-        void start()
+        void start(int timeout)
         {
             log();
             std::vector<epoll_event> events(10);
             events.clear();
             while (true)
             {
-                sleep(1);
-                int num = epoller_.epoll(events);
+
+                sleep(sleep_time);
+                int num = epoller_.epoll(events, timeout);
                 log(fmt::format("epoll result : {}", num), "info");
                 //std::cout << std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) <<std::endl;
                 for (int i = 0; i < num; ++i)
                 {
                     auto epevent = events[i];
-                    if (0 > handle_event_(epevent))
+                    if (0 > event_handler_(epevent))
                     {
                     }
                 }
@@ -249,13 +257,6 @@ namespace xp
         void add_task(std::function<void()> task)
         {
         }
-        int set_wakeup_handler(void *ptr)
-        {
-            xp::log();
-            auto data = epoll_data_t{.ptr = ptr};
-            auto epevent = make_epoll_event(data);
-            return ctl(ctl_option::add, fd_, &epevent);
-        }
         bool wakeup()
         {
             xp::log();
@@ -269,7 +270,7 @@ namespace xp
         std::list<task_type> tasks_;
         std::mutex mtx_;
         xp::Epoller epoller_;
-        handle_event_type handle_event_;
+        event_handler_type event_handler_;
     };
 }
 

@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <sys/eventfd.h>
+#include "logger.hpp"
 
 namespace xp
 {
@@ -29,10 +30,10 @@ namespace xp
         a.await_resume();
     };
 
-    inline namespace 
+    inline namespace
     {
         template <typename promise_type = void>
-        struct FinalAwaiter
+        struct CallerAwaiter
         {
             std::coroutine_handle<promise_type> waiter;
             bool await_ready() noexcept { return false; }
@@ -64,6 +65,20 @@ namespace xp
             void unhandled_exception() const noexcept
             {
                 std::terminate();
+            }
+        };
+
+        struct AwaitedPromise : public BasicPromise
+        {
+            using coroutine_handle = std::coroutine_handle<AwaitedPromise>;
+            std::coroutine_handle<> waiter = std::noop_coroutine();
+            auto get_return_object() noexcept
+            {
+                return coroutine_handle::from_promise(*this);
+            }
+            auto final_suspend() noexcept
+            {
+                return CallerAwaiter<>{waiter};
             }
         };
 
@@ -109,6 +124,17 @@ namespace xp
                     handle.resume();
                 }
             }
+            bool await_ready() noexcept
+            {
+                return false;
+            }
+            void await_suspend(std::coroutine_handle<> caller) noexcept
+            {
+                handle.promise().waiter = caller;
+            }
+            void await_resume() noexcept
+            {
+            }
             coroutine_handle handle;
 
 #define usingBasicTask          \
@@ -116,18 +142,19 @@ namespace xp
     using BasicTask::operator=
         };
 
-        struct WakeupTask : public BasicTask<BasicPromise>
+        struct NotDestroyTask : public BasicTask<BasicPromise>
         {
             usingBasicTask;
-            ~WakeupTask() {}
+            ~NotDestroyTask() {}
         };
-        WakeupTask co_wakeup(int fd)
+        
+        NotDestroyTask co_wakeup(const int fd)
         {
             xp::log();
             co_await std::suspend_always{};
             while (true)
             {
-                xp::log(fmt::format("wakeup fd={}",fd));
+                xp::log(fmt::format("wakeup fd={}", fd));
                 {
                     if (eventfd_t count{0}; 0 < eventfd_read(fd, &count))
                     {
@@ -138,21 +165,6 @@ namespace xp
             }
         }
 
-        struct ReadTask : public BasicTask<BasicPromise>
-        {
-            usingBasicTask;
-        };
-        ReadTask co_read(const int fd)
-        {
-        }
-        struct WriteTask : public BasicTask<BasicPromise>
-        {
-        };
-        WriteTask co_write(const int fd, std::vector<char> buf, const int num)
-        {
-            int res = 0;
-            ::send(fd, buf.data(), num, MSG_DONTWAIT);
-        }
     }
 
     template <typename Value>
@@ -179,7 +191,10 @@ namespace xp
         std::list<int> waiters_;
     };
 
-    /*
+}
+#endif // !CO_HPP_
+
+       /*
 template <typename Promise = void>
 struct coroutine_handle;
 
@@ -212,6 +227,3 @@ private:
 };
 
 */
-
-}
-#endif // !CO_HPP_

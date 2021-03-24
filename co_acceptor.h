@@ -13,8 +13,7 @@
 #include <iostream>
 
 #include "co.hpp"
-#include "co_conn.h"
-#include "co_epoller.h"
+
 
 #define trace() std::cout << __FUNCTION__ << " : " << __FILE__ << " : " << __LINE__ << std::endl
 
@@ -80,7 +79,7 @@ private:
     int fd_;
     sockaddr_in addr_;
 };
-
+/*
 Task co_listen_accept(int *fd, std::shared_ptr<uint32_t> revent)
 {
     trace();
@@ -129,5 +128,5 @@ Task co_listen_accept(int *fd, std::shared_ptr<uint32_t> revent)
     }
     co_return;
 }
-
+*/
 #endif
