@@ -1,5 +1,5 @@
-#ifndef LOGGER_HPP_
-#define LOGGER_HPP_
+#ifndef LOGGER_H_
+#define LOGGER_H_
 
 #include <iostream>
 #include <string>
@@ -99,4 +99,4 @@ namespace xp
     };
 }
 
-#endif //LOGGER_HPP_
+#endif //LOGGER_H_

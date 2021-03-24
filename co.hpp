@@ -8,7 +8,7 @@
 #include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <sys/eventfd.h>
-#include "logger.hpp"
+#include "logger.h"
 
 namespace xp
 {

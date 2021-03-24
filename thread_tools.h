@@ -2,7 +2,6 @@
 #define THREAD_TOOLS_
 
 #include <atomic>
-#include "thread_pool.hpp"
 #include <bits/stdc++.h>
 #include <vector>
 #include <queue>

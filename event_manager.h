@@ -15,7 +15,7 @@
 #include <stdexcept>
 #include <functional>
 
-#include "logger.hpp"
+#include "logger.h"
 
 extern int sleep_time;
 namespace xp

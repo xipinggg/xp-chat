@@ -1,5 +1,5 @@
 #include <iostream>
-#include "logger.hpp"
+#include "logger.h"
 #include "co.hpp"
 #include "co_net.h"
 #include "event_manager.h"
@@ -34,6 +34,7 @@ struct Server
 };
 
 Server server;
+
 int main()
 {
     std::async(std::launch::async, &xp::EventLoop::start, &loop, -1);
