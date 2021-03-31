@@ -7,10 +7,10 @@
 #include <cstring>
 #include <fcntl.h>
 #include <string>
+#include <string_view>
 #include <iostream>
 
 using namespace std;
-
 
 constexpr int sleep_time = 5;
 constexpr char server_ip[] = "127.0.0.1";
@@ -25,10 +25,20 @@ int main()
     addr.sin_port = htons(server_port);  
     int res = connect(fd, (sockaddr *)(&addr), sizeof(addr));
     assert(res == 0);
+
+
+
     char s[] = "abcdefghij";
-    res = send(fd, s, strlen(s), 0);
-    cout << "send res " << res << endl;
+    res = send(fd, s, 5, 0);
     sleep(sleep_time);
-    cout << "close\n";
+
+    res = send(fd, s + 5, strlen(s) - 5, 0);
+    cout << "send : " << s << endl;
+    sleep(sleep_time);
+
+    char recv_buf[14] = "0123456789eee";
+    res = read(fd, &recv_buf, 10);
+    cout <<"recv : "<< string(recv_buf, strlen(s)) << endl;
+
     close(fd);
 }

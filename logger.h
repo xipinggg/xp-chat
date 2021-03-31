@@ -3,8 +3,8 @@
 
 #include <iostream>
 #include <string>
-#include <optional>
 #include <experimental/source_location>
+#include <fstream>
 #include <filesystem>
 #include <list>
 #include <mutex>
@@ -12,90 +12,118 @@
 #include <ctime>
 #include <sys/time.h>
 #include <fmt/format.h>
+#include  <fmt/chrono.h>
 #include "thread_tools.h"
-
 namespace xp
 {
-    
-    std::string make_log(const std::string_view message = "",
-                         const std::string_view level = "debug",
-                         const std::experimental::source_location location = std::experimental::source_location::current())
+    auto make_str_time(std::time_t t = std::time(nullptr)) noexcept
     {
-        return fmt::format("[{}] {} ## {} {} {}\n",
-                           level, message, location.function_name(), location.line(), location.file_name());
+        constexpr size_t maxsize = 20;
+        std::string str(maxsize, '\0');
+        const char *format = "%F %T";
+        std::strftime(str.data(), maxsize, format, std::localtime(&t));
+        return str;
     }
-    constexpr bool log_filter(const std::string_view level)
+    std::string make_log(const std::string_view message,
+                         const std::string_view level,
+                         std::time_t t,
+                         const std::experimental::source_location location = std::experimental::source_location::current()) noexcept
+    {
+        auto strt = make_str_time(t);
+        std::string log{};
+        try
+        {
+            if (message != "")
+            {
+                log = fmt::format("{} [{}] {} @ {} @ {}\n##   {}\n",
+                                       strt,level, location.line(), location.function_name(), location.file_name(), message);
+            }
+            else
+            {
+                log = fmt::format("{} [{}] {} @ {} @ {}\n",
+                                       strt,level, location.line(), location.function_name(), location.file_name());
+            }
+        }
+        catch (...)
+        {
+        }
+        return log;
+    }
+
+    constexpr bool log_filter(const std::string_view level) noexcept
     {
         return false;
     }
-    void log(const std::string_view message = "", const std::string_view level = "debug",
-             const std::experimental::source_location location = std::experimental::source_location::current()) noexcept
+
+    void log(const std::string_view message = "",
+     const std::string_view level = "trace", 
+     std::time_t t = std::time(nullptr),
+    const std::experimental::source_location location = std::experimental::source_location::current()) noexcept
     {
-        if (log_filter(level)) 
+        auto now_point = std::chrono::system_clock::now();
+        if (!log_filter(level))
         {
-            return;
+            auto log = make_log(message, level, t, location);
+            if (log != "")
+                fmt::print(log);
         }
-        auto log = make_log(message, level, location);
-        fmt::print(log);
     }
 
-    template <typename Lock>
-    concept lock_type = requires(Lock lc)
-    {
-        lc.lock();
-        lc.unlock();
-    };
-    
     template <lock_type Lock = xp::SpinLock>
     class Logger
     {
     public:
         using location_type = std::experimental::source_location;
         using log_type = std::string;
-        Logger() noexcept
+
+        Logger() noexcept : path_{std::filesystem::current_path() / "logs"}
         {
-            //auto file = std::filesystem::
+            if (!std::filesystem::exists(path_))
+            {
+                std::filesystem::create_directory(path_);
+            }
         }
-        Logger(std::filesystem::path path)
+        Logger(std::filesystem::path path) noexcept : path_{path}
         {
-            //auto file = std::filesystem::
+            if (!std::filesystem::exists(path_))
+            {
+                std::filesystem::create_directory(path_);
+            }
         }
-        ~Logger() {}
-        bool commit(const std::string_view message = "", const std::string level = "debug",
+        ~Logger() = default;
+        
+        bool commit(const std::string_view message = "", const std::string_view level = "trace",
+        std::time_t t = std::time(nullptr),
                     const location_type location = std::experimental::source_location::current()) noexcept
         {
-            try
-            {
-                auto log = make_log(message, level, location);
-                std::lock_guard lg{lock_};
-                logs_.emplace_back(std::move(log));
-            }
-            catch (...)
-            {
+            auto now_point = std::chrono::system_clock::now();
+            auto onelog = make_log(message, level, t, location);
+            if (onelog == "")
                 return false;
-            }
+            logs_.add(std::move(onelog));
             return true;
         }
-        void out()
+        void output()
         {
-            auto logs = decltype(logs_){};
-            {
-                std::lock_guard lg{lock_};
-                logs = std::move(logs_);
-            }
-
+            if (logs_.empty())
+                return;
+            auto logs = logs_.get();
+            std::ofstream fout(path_ / "test.log", std::ios::app | std::ios::out);
+            if (fout.bad())
+                return;
             for (auto &log : logs)
             {
                 //std::cout << log;
                 fmt::print(log);
+                fout << log;
             }
+            fout.close();
         }
 
     private:
     private:
-        std::list<log_type> logs_;
-        Lock lock_;
-        std::filesystem::path path_;
+        xp::SwapBuffer<log_type> logs_;
+        std::filesystem::path path_ = std::filesystem::current_path() / "logs";
     };
 }
 

@@ -12,6 +12,7 @@
 
 namespace xp
 {
+    extern thread_local int to_del_fd;
     template <typename P>
     concept PromiseType = requires(P p)
     {
@@ -30,142 +31,296 @@ namespace xp
         a.await_resume();
     };
 
-    inline namespace
+    template <typename promise>
+    concept FinalSuspendPromiseType = requires(promise p)
     {
-        template <typename promise_type = void>
-        struct CallerAwaiter
-        {
-            std::coroutine_handle<promise_type> waiter;
-            bool await_ready() noexcept { return false; }
-            auto await_suspend(std::coroutine_handle<promise_type> handle) noexcept
-            {
-                return waiter;
-            }
-            void await_resume() noexcept {}
-        };
+        p.final_suspend().await_ready() == false;
+    };
 
-        struct BasicPromise
+    template <typename promise_type = void>
+    struct CallerAwaiter
+    {
+        std::coroutine_handle<promise_type> waiter;
+        constexpr bool await_ready() noexcept { return false; }
+        auto await_suspend(std::coroutine_handle<promise_type> handle) noexcept
         {
-            using coroutine_handle = std::coroutine_handle<BasicPromise>;
-            auto get_return_object() noexcept
-            {
-                return coroutine_handle::from_promise(*this);
-            }
-            auto initial_suspend() const noexcept
-            {
-                return std::suspend_never{};
-            }
-            auto final_suspend() const noexcept
-            {
-                return std::suspend_never{};
-            }
-            void return_void() const noexcept
-            {
-            }
-            void unhandled_exception() const noexcept
-            {
-                std::terminate();
-            }
-        };
+            return waiter;
+        }
+        constexpr void await_resume() noexcept {}
+    };
 
-        struct AwaitedPromise : public BasicPromise
+    //not final suspend
+    struct BasicPromise
+    {
+        using coroutine_handle = std::coroutine_handle<BasicPromise>;
+        auto get_return_object() noexcept
         {
-            using coroutine_handle = std::coroutine_handle<AwaitedPromise>;
-            std::coroutine_handle<> waiter = std::noop_coroutine();
-            auto get_return_object() noexcept
-            {
-                return coroutine_handle::from_promise(*this);
-            }
-            auto final_suspend() noexcept
-            {
-                return CallerAwaiter<>{waiter};
-            }
-        };
+            return coroutine_handle::from_promise(*this);
+        }
+        constexpr auto initial_suspend() const noexcept
+        {
+            return std::suspend_never{};
+        }
+        constexpr auto final_suspend() const noexcept
+        {
+            return std::suspend_never{};
+        }
+        constexpr void return_void() const noexcept
+        {
+        }
+        void unhandled_exception() const noexcept
+        {
+            log("", "fatal");
+            std::terminate();
+        }
+    };
 
-        template <PromiseType promise_t = BasicPromise>
-        struct BasicTask
+    struct FinalSuspendPromise : public BasicPromise
+    {
+        using coroutine_handle = std::coroutine_handle<FinalSuspendPromise>;
+        auto get_return_object() noexcept
         {
-            using promise_type = promise_t;
-            using coroutine_handle = std::coroutine_handle<promise_type>;
-            BasicTask() noexcept : handle(nullptr) {}
-            BasicTask(coroutine_handle hd) noexcept : handle(hd) {}
-            BasicTask(promise_type &promise) : handle(std::coroutine_handle<promise_type>::from_promise(promise)) {}
-            BasicTask(BasicTask &&task) noexcept : handle(task.handle)
+            return coroutine_handle::from_promise(*this);
+        }
+        constexpr auto final_suspend() const noexcept
+        {
+            return std::suspend_always{};
+        }
+    };
+
+    struct AwaitedPromise : public BasicPromise
+    {
+        using coroutine_handle = std::coroutine_handle<AwaitedPromise>;
+        std::coroutine_handle<> waiter = std::noop_coroutine();
+        auto get_return_object() noexcept
+        {
+            return coroutine_handle::from_promise(*this);
+        }
+        constexpr auto final_suspend() noexcept
+        {
+            return CallerAwaiter<>{waiter};
+        }
+    };
+
+    //not auto destroy handle
+    template <PromiseType promise_t = BasicPromise>
+    struct BasicTask
+    {
+        using promise_type = promise_t;
+        using coroutine_handle = std::coroutine_handle<promise_type>;
+        BasicTask() noexcept : handle(nullptr) {}
+
+        BasicTask(BasicTask &) = default;
+        BasicTask &operator=(BasicTask &) = default;
+        BasicTask(BasicTask &&) = default;
+        BasicTask &operator=(BasicTask &&) = default;
+
+        BasicTask(coroutine_handle hd) noexcept : handle(hd) {}
+        BasicTask(promise_type &promise)
+            : handle(std::coroutine_handle<promise_type>::from_promise(promise)) {}
+        BasicTask(void *p)
+            : handle(std::coroutine_handle<promise_type>::from_address(p)) {}
+        ~BasicTask() {}
+
+        bool done() noexcept
+        {
+            return handle.done();
+        }
+        void resume() noexcept
+        {
+            if (handle && !handle.done())
             {
-                task.handle = nullptr;
+                handle.resume();
             }
-            BasicTask &operator=(BasicTask &&task) noexcept
-            {
-                if (handle) [[likely]]
-                {
-                    handle.destroy();
-                }
-                handle = task.handle;
-                task.handle = nullptr;
-                return *this;
-            }
-            BasicTask &operator=(const BasicTask &) = delete;
-            BasicTask(const BasicTask &) = delete;
-            virtual ~BasicTask()
-            {
-                if (handle)
-                {
-                    handle.destroy();
-                }
-            }
-            bool done() noexcept
-            {
-                return handle.done();
-            }
-            void resume() noexcept
-            {
-                if (handle && !handle.done())
-                {
-                    handle.resume();
-                }
-            }
-            bool await_ready() noexcept
-            {
-                return false;
-            }
-            void await_suspend(std::coroutine_handle<> caller) noexcept
+        }
+
+        bool await_ready() noexcept
+        {
+            return handle.done();
+        }
+        void await_suspend(std::coroutine_handle<> caller) noexcept
+        {
+            log();
+            if (requires { promise.waiter; })
             {
                 handle.promise().waiter = caller;
             }
-            void await_resume() noexcept
-            {
-            }
-            coroutine_handle handle;
+        }
+        void await_resume() noexcept
+        {
+        }
+        coroutine_handle handle;
 
 #define usingBasicTask          \
     using BasicTask::BasicTask; \
     using BasicTask::operator=
-        };
+    };
 
-        struct NotDestroyTask : public BasicTask<BasicPromise>
+    template <FinalSuspendPromiseType promise_t = AwaitedPromise>
+    struct AutoDestroyTask
+    {
+        using promise_type = promise_t;
+        using coroutine_handle = std::coroutine_handle<promise_type>;
+        AutoDestroyTask() noexcept : handle(nullptr) {}
+
+        AutoDestroyTask(const AutoDestroyTask &) = delete;
+        AutoDestroyTask &operator=(const AutoDestroyTask &) = delete;
+        AutoDestroyTask(AutoDestroyTask &&task) noexcept : handle{task.handle}
         {
-            usingBasicTask;
-            ~NotDestroyTask() {}
-        };
-        
-        NotDestroyTask co_wakeup(const int fd)
+            task.handle = nullptr;
+        }
+        AutoDestroyTask &operator=(AutoDestroyTask &&task) noexcept
         {
-            xp::log();
-            co_await std::suspend_always{};
-            while (true)
+            handle = task.handle;
+            task.handle = nullptr;
+        }
+        AutoDestroyTask(coroutine_handle hd) noexcept
+            : handle(hd) {}
+        AutoDestroyTask(promise_type &promise)
+            : handle{std::coroutine_handle<promise_type>::from_promise(promise)} {}
+        AutoDestroyTask(void *p)
+            : handle{std::coroutine_handle<promise_type>::from_address(p)} {}
+
+        ~AutoDestroyTask()
+        {
+            if (handle)
             {
-                xp::log(fmt::format("wakeup fd={}", fd));
-                {
-                    if (eventfd_t count{0}; 0 < eventfd_read(fd, &count))
-                    {
-                        co_return;
-                    }
-                }
-                co_await std::suspend_always{};
+                log("handle destroy");
+                handle.destroy();
             }
         }
+        bool done() noexcept
+        {
+            return handle.done();
+        }
+        void resume() noexcept
+        {
+            if (handle && !handle.done())
+            {
+                handle.resume();
+            }
+        }
+        bool await_ready() noexcept
+        {
+            return handle && handle.done();
+        }
+        void await_suspend(std::coroutine_handle<> caller) noexcept
+        {
+            if constexpr (requires { handle.promise().waiter; })
+            {
+                handle.promise().waiter = caller;
+            }
+        }
+        void await_resume() noexcept
+        {
+        }
+        coroutine_handle handle;
+    };
 
+    AutoDestroyTask<> f()
+    {
+        co_return;
     }
+
+    BasicTask<> co_wakeup(const int fd)
+    {
+        xp::log();
+        co_await std::suspend_always{};
+        while (true)
+        {
+            xp::log(fmt::format("wakeup fd={}", fd));
+            {
+                if (eventfd_t count{0}; 0 < eventfd_read(fd, &count))
+                {
+                    co_return;
+                }
+            }
+            co_await std::suspend_always{};
+        }
+    }
+
+    template <PromiseType promise_t = BasicPromise>
+    struct AutoTask
+    {
+        using promise_type = promise_t;
+        using coroutine_handle = std::coroutine_handle<promise_type>;
+        AutoTask() noexcept : handle(nullptr) {}
+
+        AutoTask(const AutoTask &) = delete;
+        AutoTask &operator=(const AutoTask &) = delete;
+        AutoTask(AutoTask &&task) requires FinalSuspendPromiseType<promise_type> noexcept : handle{task.handle}
+        {
+            task.handle = nullptr;
+        }
+        AutoTask &operator=(AutoTask &&task) requires FinalSuspendPromiseType<promise_type> noexcept
+        {
+            handle = task.handle;
+            task.handle = nullptr;
+        }
+        AutoTask(AutoTask &&) = default;
+        AutoTask &operator=(AutoTask &&) = default;
+
+        AutoTask(coroutine_handle hd) noexcept
+            : handle(hd) {}
+        AutoTask(promise_type &promise)
+            : handle{std::coroutine_handle<promise_type>::from_promise(promise)} {}
+        AutoTask(void *p)
+            : handle{std::coroutine_handle<promise_type>::from_address(p)} {}
+
+        ~AutoDestroyTask()
+        {
+            if (requires FinalSuspendPromiseType<promise_type>)
+            {
+                if (handle)
+                {
+                    log("handle destroy");
+                    handle.destroy();
+                }
+            }
+        }
+        bool done() noexcept
+        {
+            return handle && handle.done();
+        }
+        void resume() noexcept
+        {
+            if (handle && !handle.done())
+            {
+                handle.resume();
+            }
+        }
+        bool await_ready() noexcept
+        {
+            return handle && handle.done();
+        }
+        void await_suspend(std::coroutine_handle<> caller) noexcept
+        {
+            if constexpr (requires { handle.promise().waiter; })
+            {
+                handle.promise().waiter = caller;
+            }
+        }
+        void await_resume() noexcept
+        {
+        }
+        coroutine_handle handle;
+    };
+
+    class CoManager
+    {
+    public:
+        CoManager()
+        {
+        }
+        ~CoManager()
+        {
+        }
+
+    private:
+        //std::unordered_map<coroutine_handle<>,> coros_
+        std::mutex mtx_;
+        xp::SpinLock spin_lock_;
+    };
 
     template <typename Value>
     class Channel
@@ -194,7 +349,7 @@ namespace xp
 }
 #endif // !CO_HPP_
 
-       /*
+/*
 template <typename Promise = void>
 struct coroutine_handle;
 

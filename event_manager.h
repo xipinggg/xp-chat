@@ -20,6 +20,7 @@
 extern int sleep_time;
 namespace xp
 {
+
     epoll_event make_epoll_event(const epoll_data_t data, const uint32_t events = EPOLLIN | EPOLLPRI | EPOLLHUP)
     {
         epoll_event event;
@@ -141,45 +142,6 @@ namespace xp
     private:
     };
 
-    class Event
-    {
-    public:
-        Event() : fd_{eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)}
-        {
-        }
-        Event(std::function<int()> make_fd) : fd_{make_fd()}
-        {
-            if (fd_ < 0)
-                throw std::bad_exception{};
-        }
-        ~Event()
-        {
-            ::close(fd_);
-        }
-        int fd() const
-        {
-            return fd_;
-        }
-        void handle(epoll_event epevent)
-        {
-        }
-        void handle_read()
-        {
-        }
-        void handle_write()
-        {
-        }
-        void handle_close()
-        {
-        }
-        void handle_error()
-        {
-        }
-
-    private:
-        int fd_ = -1;
-    };
-
     class EventLoop
     {
     public:
@@ -195,7 +157,7 @@ namespace xp
         {
             log();
         }
-        EventLoop(event_handler_type event_handler,std::function<void *(int)> get_wakeup_handler)
+        EventLoop(event_handler_type event_handler, std::function<void *(int)> get_wakeup_handler)
             : fd_{eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)}, event_handler_{event_handler}
         {
             log(fmt::format("eventfd={}", fd_));
@@ -219,10 +181,11 @@ namespace xp
         void start(int timeout)
         {
             log();
-            std::vector<epoll_event> events(10);
+            std::vector<epoll_event> events(64);
             events.clear();
             while (true)
             {
+
 
                 sleep(sleep_time);
                 int num = epoller_.epoll(events, timeout);
@@ -231,47 +194,88 @@ namespace xp
                 for (int i = 0; i < num; ++i)
                 {
                     auto epevent = events[i];
-                    if (0 > event_handler_(epevent))
+                    if (const int fd = event_handler_(epevent); 0 <= fd)
                     {
+                        log();
+                        ctl(del, fd, nullptr);
                     }
                 }
+                do_tasks();
             }
         }
         int ctl(ctl_option option, int fd, epoll_event *event)
         {
-            xp::log();
+            xp::log(fmt::format("option={}", option));
             return epoller_.ctl(option, fd, event);
         }
-        /*template <class Function, class... Args>
-        std::future<typename std::result_of<Function(Args...)>::type>
-        add_task(Function &&fcn, Args &&...args)
-        {
-            using return_type = typename std::result_of<Function(Args...)>::type;
-            using task = std::packaged_task<return_type()>;
-
-            auto t = std::make_shared<task>(std::bind(std::forward<Function>(fcn), std::forward<Args>(args)...));
-            auto ret = t->get_future();
-            tasks_.emplace([t] { (*t)(); });
-            return ret;
-        }*/
         void add_task(std::function<void()> task)
         {
+            tasks_.add(std::move(task));
         }
         bool wakeup()
         {
             xp::log();
             return eventfd_write(fd_, 1) >= 0;
         }
+        void on_wakeup()
+        {
+            xp::log();
+            eventfd_t count{0};
+            eventfd_read(fd_, &count);
+        }
         int fd() const noexcept { return fd_; }
+
+    private:
+        void do_tasks()
+        {
+            if (tasks_.empty())
+                return;
+            auto tasks = tasks_.get();
+            for (auto &task : tasks)
+            {
+                task();
+            }
+        }
 
     private:
         int fd_ = -1;
         std::vector<epoll_event> events_;
-        std::list<task_type> tasks_;
+        xp::SwapBuffer<task_type> tasks_;
         std::mutex mtx_;
         xp::Epoller epoller_;
         event_handler_type event_handler_;
     };
+
+    class EventLoopManager
+    {
+    public:
+        EventLoopManager(const int num) : loops_num_{num}, loops_{num}
+        {
+        }
+        ~EventLoopManager()
+        {
+        }
+        EventLoop &select(const int fd, int &idx) noexcept
+        {
+            idx = fd % loops_num_;
+            return loops_[idx];
+        }
+        EventLoop &select(const int fd) noexcept
+        {
+            const int idx = fd % loops_num_;
+            return loops_[idx];
+        }
+        EventLoop &operator[](const int idx)
+        {
+            return loops_.at(idx);
+        }
+
+    private:
+        int loops_num_;
+        std::vector<EventLoop> loops_;
+        std::mutex mtx_;
+    };
+
 }
 
 #endif

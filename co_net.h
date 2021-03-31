@@ -13,15 +13,55 @@
 #include <iostream>
 #include "logger.h"
 #include "co.hpp"
+extern thread_local epoll_event th_epevent;
+extern int sleep_time;
 namespace xp
 {
-    BasicTask<AwaitedPromise> co_read(const int fd, void *buf, int num, int &result)
+    thread_local int to_del_fd = -1;
+
+    struct ReadPromise : public BasicPromise
+    {
+        using coroutine_handle = std::coroutine_handle<ReadPromise>;
+        auto get_return_object() noexcept
+        {
+            return coroutine_handle::from_promise(*this);
+        }
+        auto yield_value(int i)
+        {
+            value = i;
+            return std::suspend_always{};
+        }
+        int fd;
+        void *buf;
+        size_t num;
+        int value;
+    };
+    struct ReadTask : public BasicTask<ReadPromise>
+    {
+        usingBasicTask;
+        auto resume() noexcept
+        {
+            if (handle && !handle.done())
+            {
+                handle.resume();
+            }
+            return handle.promise().value;
+        }
+        auto resume(void *p, size_t num) noexcept
+        {
+            handle.promise().buf = p;
+            handle.promise().num = num;
+            handle.resume();
+            return handle.promise().value;
+        }
+    };
+    ReadTask co_read(int fd, void *&buf, size_t &num)
     {
         xp::log();
         std::suspend_always{};
         while (buf)
         {
-            result = ::recv(fd, buf, num, MSG_DONTWAIT);
+            auto result = ::recv(fd, buf, num, MSG_DONTWAIT);
             xp::log();
             if (result == num) [[likely]]
             {
@@ -30,13 +70,13 @@ namespace xp
             else if (result <= 0)
             {
                 xp::log(fmt::format("errno={}", errno));
-                if (errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN)
+                if (errno & EINTR || errno & EWOULDBLOCK || errno & EAGAIN)
                 {
-                    co_await std::suspend_always{};
+                    co_yield 1;
                 }
                 else
                 {
-                    co_await CallerAwaiter<>{};
+                    co_yield -1;
                 }
             }
             else if (result < num)
@@ -48,13 +88,15 @@ namespace xp
         xp::log();
         co_return;
     }
-    BasicTask<AwaitedPromise> co_write(const int fd, void *buf, int num, int &result)
+
+    using WriteTask = ReadTask;
+    WriteTask co_write(const int fd, void *buf, int num)
     {
         xp::log();
         std::suspend_always{};
         while (buf)
         {
-            result = ::send(fd, buf, num, MSG_DONTWAIT);
+            auto result = ::send(fd, buf, num, MSG_DONTWAIT);
             xp::log();
             if (result == num) [[likely]]
             {
@@ -82,7 +124,7 @@ namespace xp
         xp::log();
         co_return;
     }
-    class Acceptor
+/*class Acceptor
     {
     public:
         Acceptor(const int p = 8888)
@@ -117,28 +159,28 @@ namespace xp
         {
             return ::listen(fd_, backlog);
         }
-        BasicTask<AwaitedPromise> co_accept()
+        BasicTask<> co_accept(std::function<void(int, sockaddr_in)> handler)
         {
             xp::log();
             co_await std::suspend_always{};
             while (true)
             {
                 int new_fd = -1;
+                sockaddr_in addr;
                 {
-                    sockaddr_in addr;
                     socklen_t len = sizeof(addr);
                     new_fd = ::accept(fd_, (sockaddr *)&addr, &len);
                 }
-                xp::log(fmt::format("accept fd={}", new_fd));
                 if (new_fd >= 0)
                 {
-                    co_await CallerAwaiter<>{};
+                    handler(new_fd, addr);
                 }
                 else
                 {
                     co_await std::suspend_always{};
                 }
             }
+            co_return;
         }
         std::tuple<int, sockaddr_in> accept() noexcept
         {
@@ -169,28 +211,144 @@ namespace xp
         sockaddr_in addr_;
     };
 
-    NotDestroyTask co_accept(const int fd)
+*/
+
+    using ConnTask = AutoDestroyTask<FinalSuspendPromise>;
+    ConnTask co_connection(int fd, sockaddr_in addr)
     {
         xp::log();
         co_await std::suspend_always{};
-        while (true)
+        std::string write_buf(64, '\0');
+        std::string read_buf(64, '\0');
+        char *write_ptr = write_buf.data();
+        char *read_ptr = read_buf.data();
+
+        constexpr int defualt_num = 10;
+        int write_num = defualt_num;
+        int read_num = defualt_num;
+        // 验证
+        int result = 0;
+        bool flag = true;
+
+        while (flag)
         {
-            int new_fd = -1;
             {
-                sockaddr_in addr;
-                socklen_t len = sizeof(addr);
-                new_fd = ::accept(fd, (sockaddr *)&addr, &len);
+                sleep(sleep_time);
+                log();
+                int events = th_epevent.events;
+
+                if (events & EPOLLIN)
+                {
+                    log();
+                    result = ::recv(fd, read_ptr, read_num, MSG_DONTWAIT);
+                    log(fmt::format("recv result={}", result));
+                    if (result == 0)
+                    {
+                        xp::log();
+                        break;
+                    }
+                    else if (result < 0)
+                    {
+                        log();
+                        std::cout << "errno\n";
+                        if (errno == EINTR || errno == EAGAIN)
+                        {
+                            xp::log();
+                        }
+                        else
+                        {
+                            xp::log();
+                            break;
+                        }
+                    }
+                    else if (result == read_num)
+                    {
+                        xp::log();
+                        log(fmt::format("{} says : {}", fd, std::string_view(read_buf.data(), defualt_num)));
+                        read_num = defualt_num;
+                        read_ptr = &read_buf[0];
+                        copy(read_buf.begin(), read_buf.end(), write_buf.begin());
+                        events |= EPOLLOUT;
+                        log(fmt::format("events={}", events));
+                    }
+                    else
+                    {
+                        xp::log();
+                        read_num -= result;
+                        read_ptr += result;
+                    }
+                }
+
+                if (events & EPOLLOUT)
+                {
+                    log();
+                    result = ::send(fd, write_ptr, write_num, MSG_DONTWAIT);
+                    log(fmt::format("send result={}", result));
+                    if (result == 0)
+                    {
+                        xp::log();
+                        break;
+                    }
+                    else if (result < 0)
+                    {
+                        log();
+                        std::cout << "errno\n";
+                        if (errno == EINTR || errno == EAGAIN)
+                        {
+                            xp::log();
+                        }
+                        else
+                        {
+                            xp::log();
+                            break;
+                        }
+                    }
+                    else if (result == write_num)
+                    {
+                        xp::log();
+                        write_num = defualt_num;
+                        write_ptr = write_buf.data();
+                    }
+                    else
+                    {
+                        xp::log();
+                        write_num -= result;
+                        write_ptr += result;
+                    }
+                }
+
+                if (events & EPOLLERR)
+                {
+                    xp::log(fmt::format("events={}", events));
+                    break;
+                }
+
+                if (events & EPOLLRDHUP)
+                {
+                    xp::log(fmt::format("events={}", events));
+                    break;
+                }
             }
-            xp::log(fmt::format("accept fd={}", new_fd));
-            if (new_fd >= 0)
-            {
-                co_await CallerAwaiter<>{};
-            }
-            else
-            {
-                co_await std::suspend_always{};
-            }
+            log();
+            co_await std::suspend_always{};
         }
+        to_del_fd = fd;
+        xp::log("conn co_return");
+        co_return;
     }
+
+    struct User
+    {
+        int id;
+        char name[6];
+    };
+
+    struct Connection
+    {
+        int fd;
+        sockaddr_in addr;
+        ConnTask task;
+    };
 }
+
 #endif // !CO_NET_H

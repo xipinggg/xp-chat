@@ -14,6 +14,43 @@
 
 namespace xp
 {
+    template <typename Lock>
+    concept lock_type = requires(Lock lc)
+    {
+        lc.lock();
+        lc.unlock();
+    };
+
+    template <typename T>
+    class Singleton
+    {
+    public:
+        static T &get()
+        {
+            return instance_;
+        }
+
+    private:
+        Singleton() = default;
+        static T instance_;
+    };
+
+    //imcomplete
+    template <typename T>
+    class LazySingleton
+    {
+        /*
+    public:
+        static T *get()
+        {
+
+            return instance_;
+        }
+    private:
+        LazySingleton() = default;
+        constinit static T* instance_;*/
+    };
+
     class SpinLock
     {
     public:
@@ -126,7 +163,38 @@ namespace xp
         std::condition_variable cond_;
     };
 
+    template <typename Value>
+    class SwapBuffer
+    {
+    public:
+        using value_type = Value;
+        SwapBuffer() noexcept {}
+        ~SwapBuffer() {}
+        std::span<Value> get() noexcept
+        {
+            if (add_buffer_.empty())
+                return {};
+            get_buffer_.clear();
+            std::lock_guard lg{lock_};
+            get_buffer_.swap(add_buffer_);
+            return  {get_buffer_.begin(),get_buffer_.end()};
+        }
+        void add(Value &&value) noexcept
+        {
+            std::lock_guard lg{lock_};
+            add_buffer_.push_back(std::forward<Value>(value));
+        }
+        bool empty() const noexcept
+        {
+            return add_buffer_.empty();
+        }
+    private:
+        using Lock = xp::SpinLock;
+        using Container = std::vector<Value>;
+        Lock lock_;
+        Container get_buffer_;
+        Container add_buffer_;
+    };
 }
-
 
 #endif
