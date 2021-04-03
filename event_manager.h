@@ -20,8 +20,12 @@
 extern int sleep_time;
 namespace xp
 {
-
-    epoll_event make_epoll_event(const epoll_data_t data, const uint32_t events = EPOLLIN | EPOLLPRI | EPOLLHUP)
+    enum
+    {
+        default_epoll_events = EPOLLIN | EPOLLPRI | EPOLLHUP
+    };
+    epoll_event make_epoll_event(const epoll_data_t data,
+                                 const uint32_t events = default_epoll_events)
     {
         epoll_event event;
         event.events = events;
@@ -35,6 +39,7 @@ namespace xp
         return event;
     }
 
+    //movable
     class Epoller
     {
     public:
@@ -46,17 +51,29 @@ namespace xp
         }
         Epoller(const Epoller &) = delete;
         Epoller &operator=(const Epoller &) = delete;
-        Epoller(Epoller &&) = delete;
-        Epoller &operator=(Epoller &&) = delete;
+        Epoller(Epoller &&e) noexcept
+            : epollfd_{e.epollfd_}, events_{std::move(e.events_)}, mtx_{}
+        {
+            e.epollfd_ = -1;
+        }
+        Epoller &operator=(Epoller &&e) noexcept
+        {
+            epollfd_ = e.epollfd_;
+            events_ = std::move(e.events_);
+
+            e.epollfd_ = -1;
+            return *this;
+        }
         ~Epoller()
         {
             log(fmt::format("close epollfd : {}", epollfd_));
-            ::close(epollfd_);
+            if (epollfd_ >= 0)
+                ::close(epollfd_);
         }
         int ctl(const int option, const int fd, epoll_event *event)
         {
             log(fmt::format("option={},fd={}", option, fd));
-            std::lock_guard<decltype(mtx_)> lg{mtx_};
+            std::lock_guard lg{mtx_};
             return ::epoll_ctl(epollfd_, option, fd, event);
         }
         int epoll(std::vector<epoll_event> &events, const int timeout = 0)
@@ -66,7 +83,7 @@ namespace xp
             assert(buf);
             const int max_num = events.capacity();
             assert(max_num > 0);
-            std::lock_guard<decltype(mtx_)> lg{mtx_};
+            std::lock_guard lg{mtx_};
             return epoll_wait(epollfd_, buf, max_num, timeout);
         }
         /*std::span<epoll_event> epoll(const int num = 0)
@@ -142,11 +159,12 @@ namespace xp
     private:
     };
 
+    //movable
     class EventLoop
     {
     public:
         using task_type = std::function<void()>;
-        using event_handler_type = std::function<int(epoll_event)>;
+        using event_handler_type = std::function<void(epoll_event)>;
         enum ctl_option
         {
             add = EPOLL_CTL_ADD,
@@ -157,7 +175,7 @@ namespace xp
         {
             log();
         }
-        EventLoop(event_handler_type event_handler, std::function<void *(int)> get_wakeup_handler)
+        EventLoop(event_handler_type event_handler)
             : fd_{eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)}, event_handler_{event_handler}
         {
             log(fmt::format("eventfd={}", fd_));
@@ -165,18 +183,34 @@ namespace xp
             {
                 throw std::bad_exception{};
             }
-            auto ptr = get_wakeup_handler(fd_);
+            /*auto ptr = get_wakeup_handler(fd_);
             auto data = epoll_data_t{.ptr = ptr};
             auto epevent = make_epoll_event(data);
-            ctl(ctl_option::add, fd_, &epevent);
+            ctl(ctl_option::add, fd_, &epevent);*/
         }
         EventLoop(const EventLoop &) = delete;
         EventLoop &operator=(const EventLoop &) = delete;
-        EventLoop(EventLoop &&) = delete;
-        EventLoop &operator=(EventLoop &&) = delete;
+        EventLoop(EventLoop &&e) noexcept
+            : fd_{e.fd_}, events_{std::move(e.events_)}, tasks_{std::move(e.tasks_)}, mtx_{},
+              epoller_{std::move(e.epoller_)}, event_handler_{e.event_handler_}
+        {
+            e.fd_ = -1;
+        }
+        EventLoop &operator=(EventLoop &&e) noexcept
+        {
+            fd_ = e.fd_;
+            events_ = std::move(e.events_);
+            tasks_ = std::move(tasks_);
+            epoller_ = std::move(e.epoller_);
+            event_handler_ = e.event_handler_;
+
+            e.fd_ = -1;
+            return *this;
+        }
         ~EventLoop()
         {
-            ::close(fd_);
+            if (fd_ >= 0)
+                ::close(fd_);
         }
         void start(int timeout)
         {
@@ -185,8 +219,6 @@ namespace xp
             events.clear();
             while (true)
             {
-
-
                 sleep(sleep_time);
                 int num = epoller_.epoll(events, timeout);
                 log(fmt::format("epoll result : {}", num), "info");
@@ -194,11 +226,7 @@ namespace xp
                 for (int i = 0; i < num; ++i)
                 {
                     auto epevent = events[i];
-                    if (const int fd = event_handler_(epevent); 0 <= fd)
-                    {
-                        log();
-                        ctl(del, fd, nullptr);
-                    }
+                    event_handler_(epevent);
                 }
                 do_tasks();
             }
@@ -249,13 +277,18 @@ namespace xp
     class EventLoopManager
     {
     public:
-        EventLoopManager(const int num) : loops_num_{num}, loops_{num}
+        EventLoopManager(uint num, EventLoop::event_handler_type handler)
+            : loops_num_{num}
         {
+            while (num--)
+            {
+                loops_.emplace_back(handler);
+            }
         }
         ~EventLoopManager()
         {
         }
-        EventLoop &select(const int fd, int &idx) noexcept
+        EventLoop &select(const uint fd, uint &idx) noexcept
         {
             idx = fd % loops_num_;
             return loops_[idx];

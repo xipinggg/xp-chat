@@ -70,7 +70,7 @@ namespace xp
         }
         void unhandled_exception() const noexcept
         {
-            log("", "fatal");
+            log("", "error");
             std::terminate();
         }
     };
@@ -120,6 +120,7 @@ namespace xp
             : handle(std::coroutine_handle<promise_type>::from_promise(promise)) {}
         BasicTask(void *p)
             : handle(std::coroutine_handle<promise_type>::from_address(p)) {}
+        //not destroy handle
         ~BasicTask() {}
 
         bool done() noexcept
@@ -141,9 +142,9 @@ namespace xp
         void await_suspend(std::coroutine_handle<> caller) noexcept
         {
             log();
-            if (requires { promise.waiter; })
+            if constexpr (requires { handle.promise().waiter; })
             {
-                handle.promise().waiter = caller;
+                log();handle.promise().waiter = caller;
             }
         }
         void await_resume() noexcept
@@ -185,7 +186,7 @@ namespace xp
         {
             if (handle)
             {
-                log("handle destroy");
+                log();
                 handle.destroy();
             }
         }
@@ -213,14 +214,11 @@ namespace xp
         }
         void await_resume() noexcept
         {
+ 
         }
+
         coroutine_handle handle;
     };
-
-    AutoDestroyTask<> f()
-    {
-        co_return;
-    }
 
     BasicTask<> co_wakeup(const int fd)
     {
@@ -228,8 +226,8 @@ namespace xp
         co_await std::suspend_always{};
         while (true)
         {
-            xp::log(fmt::format("wakeup fd={}", fd));
             {
+                xp::log(fmt::format("wakeup fd={}", fd));
                 if (eventfd_t count{0}; 0 < eventfd_read(fd, &count))
                 {
                     co_return;
@@ -239,7 +237,7 @@ namespace xp
         }
     }
 
-    template <PromiseType promise_t = BasicPromise>
+    /*template <PromiseType promise_t = BasicPromise>
     struct AutoTask
     {
         using promise_type = promise_t;
@@ -305,7 +303,7 @@ namespace xp
         }
         coroutine_handle handle;
     };
-
+*/
     class CoManager
     {
     public:

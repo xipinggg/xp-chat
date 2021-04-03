@@ -55,8 +55,9 @@ namespace xp
     {
     public:
         SpinLock() noexcept = default;
-        SpinLock(SpinLock &&) noexcept = default;
-        SpinLock &operator=(SpinLock &&) noexcept = default;
+        SpinLock(SpinLock &&) = delete;
+        SpinLock &operator=(SpinLock &&) = delete;
+
         SpinLock(const SpinLock &) = delete;
         SpinLock &operator=(const SpinLock &) = delete;
         void lock() noexcept
@@ -170,6 +171,20 @@ namespace xp
         using value_type = Value;
         SwapBuffer() noexcept {}
         ~SwapBuffer() {}
+        
+        SwapBuffer(SwapBuffer&&sb) noexcept 
+            :lock_{}, get_buffer_{std::move(sb.get_buffer_)}, add_buffer_{std::move(sb.add_buffer_)}
+        {
+        }
+        SwapBuffer &operator=(SwapBuffer &&sb) noexcept
+        {
+            get_buffer_ = std::move(sb.get_buffer_);
+            add_buffer_ = std::move(sb.add_buffer_);
+            return *this;
+        }
+        SwapBuffer(const SwapBuffer &) = delete;
+        SwapBuffer &operator=(const SwapBuffer &) = delete;
+        
         std::span<Value> get() noexcept
         {
             if (add_buffer_.empty())
@@ -191,6 +206,7 @@ namespace xp
     private:
         using Lock = xp::SpinLock;
         using Container = std::vector<Value>;
+
         Lock lock_;
         Container get_buffer_;
         Container add_buffer_;

@@ -71,29 +71,6 @@ namespace xp
         sockaddr_in addr;
     };
 
-    BasicTask<> co_accept(const int fd, std::function<void(int, sockaddr_in)> handler)
-    {
-        xp::log();
-        co_await std::suspend_always{};
-        while (true)
-        {
-            int new_fd = -1;
-            sockaddr_in addr;
-            {
-                socklen_t len = sizeof(addr);
-                new_fd = ::accept(fd, (sockaddr *)&addr, &len);
-            }
-            if (new_fd >= 0)
-            {
-                handler(new_fd, addr);
-            }
-            else
-            {
-                co_await std::suspend_always{};
-            }
-        }
-        co_return;
-    }
 
 }
 

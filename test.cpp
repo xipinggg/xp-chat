@@ -3,40 +3,49 @@
 #include "co.hpp"
 #include "co_net.h"
 #include "event_manager.h"
+#include "server.h"
 
 using namespace std;
 using namespace xp;
 
-std::coroutine_handle<> g_handle;
-int sleep_time = 1;
+thread_local int xp::to_del_fd;
+thread_local epoll_event th_epevent;
 
-struct EventAwaiter
-{
-    bool await_ready() noexcept { return false; }
-    void await_suspend(std::coroutine_handle<> handle) noexcept
-    {
-        g_handle = handle;
-    }
-    void await_resume() noexcept {}
-};
+int sleep_time = 2;
 
 xp::EventLoop::event_handler_type event_handler = [](epoll_event epevent) {
     xp::log();
     auto handle = std::coroutine_handle<>::from_address(epevent.data.ptr);
+    th_epevent = epevent;
+    xp::to_del_fd = -1;
     handle.resume();
-    return -1;
+    if (handle.done())
+    {
+        xp::log();
+        server->close_conn(xp::to_del_fd);
+    }
+    else
+    {
+        xp::log();
+    }
 };
 
-xp::EventLoop loop{event_handler, [](int fd) { return xp::co_wakeup(fd).handle.address(); }};
-struct Server
-{
-    xp::Acceptor acceptor;
-};
+xp::EventLoopManager loops(5, event_handler);
+xp::EventLoop &accept_loop = loops[0];
+xp::Server sss_{};
+xp::Server *server = &sss_;
 
-Server server;
+Logger logger;
 
 int main()
 {
-    std::async(std::launch::async, &xp::EventLoop::start, &loop, -1);
-    server.acceptor.co_accept();
+    /*
+    auto f = std::async(std::launch::deferred, &xp::EventLoop::start, &loop, -1);
+    f.wait();
+    */
+
+    auto &main_loop = loops[0];
+
+    main_loop.start(-1);
+    sleep(5);
 }
