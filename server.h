@@ -16,7 +16,8 @@ namespace xp
 }
 
 extern xp::Server *server;
-extern xp::EventLoopManager loops;
+extern xp::EventLoop main_loop;
+extern xp::EventLoop accept_loop;
 
 namespace xp
 {
@@ -32,7 +33,7 @@ namespace xp
 		BasicTask<> co_accept(const int fd);
 		User *try_login(xp::Connection *conn, xp::userid_type id, xp::userpassword_type password);
 		bool handle_message(xp::MessageWrapper msg_wrapper);
-		void close_conn(int fd);
+		void del_conn(int fd);
 		xp::Room *get_room(xp::roomid_type id);
 		xp::Acceptor acceptor_;
 		xp::BasicTask<> accept_task_;
@@ -60,21 +61,15 @@ namespace xp
 		std::queue<xp::MessageWrapper> messages;
 		//xp::SpinLock msg_lock;
 		std::mutex msg_lock;
+		bool state = true;
 
 		Connection(int f, sockaddr_in a);
-		auto messages_size() const noexcept
-		{
-			return messages.size();
-		}
-		bool is_messages_empty() const noexcept
-		{
-			return messages.empty();
-		}
+
 		Connection(const Connection &) = delete;
 		Connection &operator=(const Connection &) = delete;
 		Connection(Connection &&conn) noexcept
 			: fd{conn.fd}, addr{conn.addr}, user{conn.user},
-			  messages{std::move(conn.messages)}, msg_lock{}
+			  messages{std::move(conn.messages)}, msg_lock{}, state{conn.state}
 		{
 		}
 		Connection &operator=(Connection &&conn) noexcept
@@ -83,9 +78,24 @@ namespace xp
 			addr = conn.addr;
 			user = conn.user;
 			messages = std::move(conn.messages);
+			state = conn.state;
 			return *this;
 		}
-
+		~Connection()
+		{
+			if (fd >= 0) [[likely]]
+			{
+				::close(fd);
+			}
+		}
+		auto messages_size() const noexcept
+		{
+			return messages.size();
+		}
+		bool is_messages_empty() const noexcept
+		{
+			return messages.empty();
+		}
 		xp::MessageWrapper get_message()
 		{
 			log();
@@ -94,7 +104,7 @@ namespace xp
 			//log();
 			log(fmt::format("messages size={}", messages.size()), "info");
 			auto msg = messages.front();
-			log(fmt::format("from_id={}",xp::hton(msg.get()->from_id)),"info");
+			log(fmt::format("from_id={}", xp::hton(msg.get()->from_id)), "info");
 			messages.pop();
 			return msg;
 		}
@@ -108,7 +118,7 @@ namespace xp
 			messages.push(msg);
 			if (messages.size() == 1)
 			{
-				if (auto loop = loops.select(fd); loop)
+				/*if (auto loop = loops.select(fd); loop)
 				{
 					auto handle = task.handle;
 					auto u = this->user;
@@ -123,26 +133,29 @@ namespace xp
 						}
 					};
 					loop->add_task(ts);
-				}
+				}*/
 			}
 		}
 	};
 
 	ConnTask co_connection(Connection *conn)
 	{
-		int fd = conn->fd;
-		sockaddr_in addr = conn->addr;
+		const int fd = conn->fd;
+		const sockaddr_in addr = conn->addr;
 
-		xp::Defer defer1{[fd, conn]() {
-            to_del_fd = fd;
-            if (conn->user) [[likely]]
-            {
-                conn->user->state = false;
+		//delete conn from server
+		xp::Defer defer1{[fd, conn] {
+			xp::log("conn co_return");
+			conn->state = false;
+			if (conn->user) [[likely]]
+			{
+				conn->user->state = false;
 				conn->user->conn = nullptr;
 			}
-			xp::log("conn co_return"); }};
+			main_loop.add_task([fd] { server->del_conn(fd); });
+		}};
 
-		xp::log();
+		xp::log("login module");
 		//login module
 		{
 			constexpr int login_message_num = head_size + userpassword_size;
@@ -183,8 +196,8 @@ namespace xp
 			}
 		}
 
-		xp::log();
-		xp::EventAwaiter awaiter{&accept_loop, fd, false};
+		xp::log("co_await awaiter to sched");
+		xp::EventAwaiter awaiter{&main_loop, fd};
 		co_await awaiter;
 		xp::log();
 
@@ -211,20 +224,21 @@ namespace xp
 				sleep(sleep_time);
 
 				int result = 0;
-				int events = th_epevent.events;
+				int events = thread_epoll_event.events;
 				xp::log(fmt::format("events=", events), "info");
+				//ok
 				if (events & EPOLLERR) [[unlikely]]
 				{
 					xp::log("EPOLLERR", "info");
 					co_return;
 				}
-
+				//ok
 				if (events & EPOLLRDHUP) [[unlikely]]
 				{
 					xp::log("EPOLLRDHUP", "info");
 					co_return;
 				}
-
+				//ok
 				if (events & EPOLLIN)
 				{
 					result = ::recv(fd, read_ptr, read_num, MSG_DONTWAIT);
@@ -279,6 +293,7 @@ namespace xp
 					}
 				}
 
+				//imcomplete!!!
 				//has old msg to complete or has new msg to begin
 				while (events & EPOLLOUT || !conn->is_messages_empty())
 				{
@@ -286,12 +301,8 @@ namespace xp
 					//if msg has completed, get new msg
 					if (!(events & EPOLLOUT) && !conn->is_messages_empty())
 					{
-						log("get new msg");
+						log();
 						write_message = std::move(conn->get_message());
-
-						log(fmt::format("!!!!!send msg from_id={}", 
-							xp::ntoh(write_message.get()->from_id)), "!!!!!");
-							
 						write_ptr = write_message.data();
 						write_num = write_message.size();
 					}
@@ -311,12 +322,10 @@ namespace xp
 								write_message = std::move(conn->get_message());
 								if (xp::ntoh(write_message.get()->from_id) !=
 									conn->user->id)
-								{	
+								{
 									break;
 								}
 							}
-							log(fmt::format("!!!!!send msg from_id={}", 
-							xp::ntoh(write_message.get()->from_id)), "!!!!!");
 							write_ptr = write_message.data();
 							write_num = write_message.context_size();
 							continue;
@@ -324,13 +333,13 @@ namespace xp
 						else if (events & EPOLLOUT) //set unoutable
 						{
 							log("set unoutable");
-							if (auto loop = loops.select(fd); loop) [[likely]]
+							/*if (auto loop = loops.select(fd); loop) [[likely]]
 							{
 								log();
 								auto epevent = th_epevent;
 								epevent.events &= ~EPOLLOUT;
 								loop->ctl(xp::EventLoop::ctl_option::mod, fd, &epevent);
-							}
+							}*/
 							break;
 						}
 					}
@@ -338,13 +347,13 @@ namespace xp
 					{
 						log("set outable");
 						//set outable
-						if (auto loop = loops.select(fd); loop) [[likely]]
+						/*.select(fd); loop) [[likely]]
 						{
 							log();
 							auto epevent = th_epevent;
 							epevent.events &= EPOLLOUT;
 							loop->ctl(xp::EventLoop::ctl_option::mod, fd, &epevent);
-						}
+						}*/
 						break;
 					}
 					else if (write_result == -1) //error
@@ -366,9 +375,6 @@ namespace xp
 		: fd{f}, addr{a}, task{xp::co_connection(this)},
 		  user{nullptr}, messages{}, msg_lock{}
 	{
-		log();
-		std::cout << "conn address " << this << std::endl;
-		log(fmt::format("messages size={}", messages.size()), "info");
 	}
 
 	Server::Server()
@@ -378,7 +384,9 @@ namespace xp
 		accept_task_ = co_accept(acceptor_.fd);
 		auto ptr = accept_task_.handle.address();
 		auto accept_event = xp::make_epoll_event(epoll_data_t{.ptr = ptr});
-		loops[0].ctl(EventLoop::add, acceptor_.fd, &accept_event);
+		//loops[0].ctl(EventLoop::add, acceptor_.fd, &accept_event);
+		accept_loop.ctl(EventLoop::add, acceptor_.fd, &accept_event);
+
 		init_users();
 		init_rooms();
 	}
@@ -408,25 +416,26 @@ namespace xp
 
 	Server::~Server()
 	{
-		log();
+		log(); //log
 	}
 
+	//imcomplete
 	xp::User *Server::try_login(xp::Connection *conn, xp::userid_type id, xp::userpassword_type password)
 	{
 		log();
-		std::cout << "conn address " << conn << std::endl;
 
 		std::shared_lock lg{users_mtx_};
-		auto iter = users_.find(id);
-		if (iter != users_.end()) [[likely]]
+
+		if (auto iter = users_.find(id);
+			iter != users_.end()) [[likely]]
 		{
 			log();
 			auto user = iter->second.get();
 			user->state = true;
 			user->conn = conn;
 			log("login conn", "info");
-			std::cout << "conn address " << user->conn << std::endl;
-			std::cout << "user address " << user << std::endl;
+			std::cout << "##conn address " << user->conn << std::endl;
+			std::cout << "##user address " << user << std::endl;
 			return user;
 		}
 		else
@@ -435,24 +444,20 @@ namespace xp
 			return nullptr;
 		}
 	}
-
+	//imcomplete
 	bool Server::handle_message(xp::MessageWrapper msg_wrapper)
 	{
-		log();
+		log("handle_message");
 		auto msg = msg_wrapper.get();
 		auto from_id = xp::ntoh(msg->from_id);
 		auto to_id = xp::ntoh(msg->to_id);
-		//log
-		auto logf = fmt::format("from_id={},to_id={}", from_id, to_id);
-		log(std::move(logf), "info");
-		//log
 		if (xp::ntoh(msg->msg_type) == xp::message_type::msg)
 		{
 			auto context = std::string_view{msg->context, xp::ntoh(msg->context_size)};
 			auto from_id = xp::ntoh(msg->from_id);
 			auto to_id = xp::ntoh(msg->to_id);
 			log(fmt::format("from {} to {} says : {}", from_id, to_id, context), "info");
-
+			
 			auto room = this->get_room(to_id);
 			if (room) [[likely]]
 			{
@@ -471,6 +476,7 @@ namespace xp
 		return false;
 	}
 
+	//ok
 	BasicTask<> Server::co_accept(const int lisent_fd)
 	{
 		xp::log();
@@ -479,21 +485,16 @@ namespace xp
 		{
 			sockaddr_in addr;
 			socklen_t len = sizeof(addr);
-			if (int fd = ::accept(lisent_fd, (sockaddr *)&addr, &len); fd >= 0)
+			if (int fd = ::accept(lisent_fd, (sockaddr *)&addr, &len);
+				fd >= 0)
 			{
 				xp::log(fmt::format("accept fd={}", fd));
+				if (auto conn = std::make_unique<Connection>(fd, addr);
+					conn->state) [[likely]]
 				{
-					void *ptr;
-					log();
-					{
-						std::unique_lock lg{conn_mtx_};
-						auto conn = std::make_unique<Connection>(fd, addr);
-
-						ptr = conn->task.handle.address();
-						connections_.insert({fd, std::move(conn)});
-					}
-					//auto conn_event = xp::make_epoll_event(epoll_data_t{.ptr = ptr});
-					//loops.select(fd).ctl(EventLoop::add, fd, &conn_event);
+					log("add conn to server", "info");
+					std::unique_lock lg{conn_mtx_};
+					connections_[fd] = std::move(conn);
 				}
 			}
 			else
@@ -504,21 +505,20 @@ namespace xp
 		co_return;
 	}
 
-	void Server::close_conn(int fd)
+	//ok, auto lock
+	void Server::del_conn(int fd)
 	{
-		log();
-		::close(fd);
+		log("delete conn from server", "info");
+
+		std::unique_lock lg{conn_mtx_};
+		if (auto iter = connections_.find(fd);
+			iter != connections_.end())
 		{
-			std::unique_lock lg{conn_mtx_};
-			if (auto iter = connections_.find(fd); 
-				iter != connections_.end())
-			{
-				connections_.erase(iter);
-			}
-			
+			connections_.erase(iter);
 		}
 	}
 
+	//ok
 	xp::Room *Server::get_room(xp::roomid_type id)
 	{
 		std::shared_lock lg{rooms_mtx_};

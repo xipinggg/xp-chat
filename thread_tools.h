@@ -91,7 +91,7 @@ namespace xp
         }
         bool try_lock() noexcept
         {
-            return flag_.test_and_set(std::memory_order::acquire);
+            return !flag_.test_and_set(std::memory_order::acquire);
         }
 
     private:
@@ -218,6 +218,10 @@ namespace xp
         {
             std::lock_guard lg{lock_};
             add_buffer_.push_back(std::forward<Value>(value));
+        }
+        auto size() const noexcept
+        {
+            return add_buffer_.size();
         }
         bool empty() const noexcept
         {

@@ -15,60 +15,85 @@
 #include "co.hpp"
 #include "event_manager.h"
 
-extern thread_local epoll_event th_epevent;
+extern thread_local epoll_event thread_epoll_event;
 extern int sleep_time;
+extern xp::Scheduler *sched;
 
 extern thread_local int to_del_fd;
-extern xp::EventLoop &accept_loop;
-
-namespace xp 
+extern xp::EventLoop accept_loop;
+extern xp::EventLoop main_loop;
+namespace xp
 {
     struct EventAwaiter
     {
-        xp::EventLoop *loop;
-        int fd;
-        bool set;
-
-        constexpr bool await_ready() noexcept { return false; }
-        void await_suspend(std::coroutine_handle<> handle) noexcept
-        {
-            if (!set)
-            {
-                auto ptr = handle.address();
-                auto event = xp::make_epoll_event(epoll_data_t{.ptr = ptr});
-                loop->ctl(xp::EventLoop::add, fd, &event);
-                set = true;
-            }
-        }
-        constexpr void await_resume() noexcept {}
+        xp::EventLoop *const loop;
+        const int fd;
+        bool set = false;
+        std::coroutine_handle<> this_handle = std::noop_coroutine();
+        // delete fd from loop,delete corotinue from shed
         ~EventAwaiter()
         {
             log();
-            loop->ctl(xp::EventLoop::del, fd, nullptr);
+            if (set && loop) [[likely]]
+            {
+                loop->commit_ctl(xp::EventLoop::del, fd, {});
+                auto handle = this->this_handle;
+                loop->add_task([handle]() {
+                    log("delete from sched", "info");
+                    std::unique_lock ul{sched->coro_states_mtx};
+                    sched->coro_states.erase(handle);
+                });
+            }
         }
+        constexpr bool await_ready() noexcept { return false; }
+        // add fd to loop,add corotinue to shed
+        void await_suspend(std::coroutine_handle<> handle) noexcept
+        {
+            log();
+            this_handle = handle;
+            if (!set && loop)
+            {
+                set = true;
+                const auto event = xp::make_epoll_event(epoll_data_t{.ptr = handle.address()});
+                loop->commit_ctl(xp::EventLoop::add, fd, event);
+                loop->add_task([handle]() {
+                    log("add to sched", "info");
+                    std::unique_lock ul{sched->coro_states_mtx};
+                    sched->coro_states[handle] =
+                        std::make_unique<xp::CoroState>(handle);
+                });
+            }
+        }
+        constexpr void await_resume() noexcept {}
     };
 
     using ReadTask = BasicTask<AwaitedPromise>;
     ReadTask co_read(int fd, void *p, size_t num, bool &result)
     {
         xp::log();
-        if (!p)
+        if (!p) [[unlikely]]
         {
             co_return;
         }
         char *buf = static_cast<char *>(p);
-        xp::EventAwaiter awaiter{&accept_loop, fd, false};
+        xp::EventAwaiter awaiter{&main_loop, fd, false};
         while (num)
         {
             auto read_result = ::recv(fd, buf, num, MSG_DONTWAIT);
-            log(fmt::format("read_result={}",read_result),"info");
+            log(fmt::format("read_result={}", read_result), "info");
             if (read_result == num) [[likely]]
             {
                 log();
                 result = true;
                 co_return;
             }
-            else if (read_result <= 0)
+            else if (read_result == 0)
+            {
+                xp::log(fmt::format("errno={}", errno), "debug");
+                result = false;
+                co_return;
+            }
+            else if (read_result < 0)
             {
                 xp::log(fmt::format("errno={}", errno), "debug");
                 if (errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN)
@@ -140,7 +165,7 @@ namespace xp
         while (buf)
         {
             auto result = ::send(fd, buf, num, MSG_DONTWAIT);
-            xp::log(fmt::format("send result={}", result));
+            xp::log(fmt::format("co_write_reuse send result={}", result));
 
             if (result == num) [[likely]]
             {
@@ -148,7 +173,13 @@ namespace xp
                 output_result = 1;
                 co_await std::suspend_always{};
             }
-            else if (result <= 0)
+            else if (result == 0)
+            {
+                xp::log(fmt::format("errno={}", errno));
+                output_result = -1;
+                co_await std::suspend_always{};
+            }
+            else if (result < 0)
             {
                 xp::log(fmt::format("errno={}", errno));
                 if (errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN)
@@ -173,8 +204,7 @@ namespace xp
         xp::log();
         co_return;
     }
-    
-    
+
 }
 
 #endif // !CO_NET_H

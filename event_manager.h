@@ -162,6 +162,11 @@ namespace xp
     //movable
     class EventLoop
     {
+        enum
+        {
+            ivalid_fd = -1,
+        };
+
     public:
         using task_type = std::function<void()>;
         using event_handler_type = std::function<void(epoll_event)>;
@@ -179,7 +184,7 @@ namespace xp
             : fd_{eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)}, event_handler_{event_handler}
         {
             log(fmt::format("eventfd={}", fd_));
-            if (fd_ < 0)
+            if (fd_ == ivalid_fd)
             {
                 throw std::bad_exception{};
             }
@@ -194,7 +199,7 @@ namespace xp
             : fd_{e.fd_}, events_{std::move(e.events_)}, tasks_{std::move(e.tasks_)}, mtx_{},
               epoller_{std::move(e.epoller_)}, event_handler_{e.event_handler_}
         {
-            e.fd_ = -1;
+            e.fd_ = ivalid_fd;
         }
         EventLoop &operator=(EventLoop &&e) noexcept
         {
@@ -204,7 +209,7 @@ namespace xp
             epoller_ = std::move(e.epoller_);
             event_handler_ = e.event_handler_;
 
-            e.fd_ = -1;
+            e.fd_ = ivalid_fd;
             return *this;
         }
         ~EventLoop()
@@ -231,30 +236,36 @@ namespace xp
             }
         }
 
-        int ctl(ctl_option option, int fd, epoll_event *event)
+        int ctl(const ctl_option option, const int fd, epoll_event *event)
         {
             xp::log(fmt::format("option={}", option));
             return epoller_.ctl(option, fd, event);
         }
-        void commit_ctl(ctl_option option, int fd, epoll_event *event)
+
+        void commit_ctl(const ctl_option option, const int fd, epoll_event event)
         {
             log();
-            
+            tasks_.add([option, fd, event, this]() {
+                auto e = event;
+                this->ctl(option, fd, &e);
+            });
         }
         void add_task(std::function<void()> task)
         {
             tasks_.add(std::move(task));
+            wakeup();
         }
         bool wakeup() noexcept
         {
             xp::log();
             return eventfd_write(fd_, 1) >= 0;
         }
-        void on_wakeup()
+        auto on_wakeup()
         {
             xp::log();
             eventfd_t count{0};
             eventfd_read(fd_, &count);
+            return count;
         }
         int fd() const noexcept { return fd_; }
 
@@ -262,8 +273,11 @@ namespace xp
         void do_tasks()
         {
             if (tasks_.empty())
+            {
                 return;
+            }
             auto tasks = tasks_.get();
+            log(fmt::format("tasks size={}", tasks.size()), "info");
             for (auto &task : tasks)
             {
                 task();
@@ -271,11 +285,12 @@ namespace xp
         }
 
     private:
-        int fd_ = -1;
+        int fd_ = ivalid_fd;
         std::vector<epoll_event> events_;
         xp::SwapBuffer<task_type> tasks_;
         std::mutex mtx_;
         xp::Epoller epoller_;
+
     public:
         event_handler_type event_handler_;
     };
