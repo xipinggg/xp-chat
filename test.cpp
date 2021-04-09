@@ -22,7 +22,10 @@ xp::EventLoop::event_handler_type event_handler = [](epoll_event epevent) {
     if (handle.done())
     {
         xp::log();
-        server->close_conn(xp::to_del_fd);
+        if (xp::to_del_fd >= 0)
+        {
+            server->close_conn(xp::to_del_fd);
+        }
     }
     else
     {
@@ -30,7 +33,7 @@ xp::EventLoop::event_handler_type event_handler = [](epoll_event epevent) {
     }
 };
 
-xp::EventLoopManager loops(5, event_handler);
+xp::EventLoopManager loops(1, event_handler);
 xp::EventLoop &accept_loop = loops[0];
 xp::Server sss_{};
 xp::Server *server = &sss_;
@@ -39,8 +42,7 @@ Logger logger;
 
 int main()
 {
-    /*
-    auto f = std::async(std::launch::deferred, &xp::EventLoop::start, &loop, -1);
+    /*auto f = std::async(std::launch::deferred, &xp::EventLoop::start, &loop, -1);
     f.wait();
     */
 

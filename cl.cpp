@@ -10,117 +10,91 @@
 #include <string_view>
 #include <iostream>
 #include <ctime>
+#include "net_type.h"
 using namespace std;
-
+using namespace xp;
 constexpr int sleep_time = 5;
 constexpr char server_ip[] = "127.0.0.1";
 constexpr int server_port = 8888;
 
-enum
+int success_id = 0;
+int &fail_id = success_id;
+
+void test(int res)
 {
-    userpassword_size = 16
-};
-
-using body_size_type = uint32_t;
-//unique
-using messageid_type = uint32_t;
-//unique
-using userid_type = uint32_t;
-//unique
-using roomid_type = uint32_t;
-//unique once room
-using seqid_type = uint32_t;
-using context_type = std::string;
-using timestamp_type = std::time_t;
-using userpassword_type = char[userpassword_size];
-
-enum message_size_t
-{
-    messageid_size = sizeof(messageid_type),
-
-    body_size_type_size = sizeof(body_size_type),
-    timestamp_size = sizeof(timestamp_type),
-    userid_size = sizeof(userid_type),
-    roomid_size = sizeof(roomid_type),
-    seqid_size = sizeof(seqid_type),
-
-    head_size = body_size_type_size + timestamp_size + userid_size + roomid_size,
-};
-
-struct Message
-{
-    //xp::messageid_type id;
-    timestamp_type timestamp;
-    userid_type from_id;
-    roomid_type to_id;
-    seqid_type seq;
-    context_type context;
-};
-
-//  /body size/ + /timestamp/ + /message type/ + /from id/ + /to id/ + /context/
+    if (res > 0)
+        cout << ++success_id << " success\n";
+    else
+        cout << ++fail_id << " fail\n";
+}
 
 int main()
 {
+
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    sockaddr_in addr;
-    addr.sin_addr.s_addr = inet_addr(server_ip);
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(server_port);
-    int res = connect(fd, (sockaddr *)(&addr), sizeof(addr));
-    assert(res == 0);
+    {
+        sockaddr_in addr;
+        addr.sin_addr.s_addr = inet_addr(server_ip);
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(server_port);
+        int res = connect(fd, (sockaddr *)(&addr), sizeof(addr));
+        assert(res == 0);
+    }
 
-    timestamp_type timestamp = time(0);
-    userid_type from_id = 2388;
-    roomid_type to_id = 0;
-    userpassword_type password = "abcdefghijklmno";
+    userid_type userid{2387};
 
-    body_size_type body_size = timestamp_size + userid_size + roomid_size + userpassword_size;
+    MessageWrapper login_message{userpassword_size};
+    auto msg = login_message.get();
+    msg->msg_type = xp::hton(message_type::login);
+    msg->timestamp = xp::hton(std::time(0));
+    msg->from_id = xp::hton(userid);
+    msg->to_id = 0;
+    msg->context_size = xp::hton(userpassword_size);
 
-    char *p;
-   
-    p = (char *)&body_size;
-    res = write(fd, p, body_size_type_size);
-    if (res != body_size_type_size)
-        cout << "1 fail\n";
+    sleep(sleep_time);
+    auto res = write(fd, login_message.data(), login_message.size());
+    cout << "send num : " << res << endl;
+    test(res);
+    sleep(sleep_time);
 
-    p = (char *)&timestamp;
-    res = write(fd, p, timestamp_size);
-    if (res != timestamp_size)
-        cout << "2 fail\n";
+    constexpr char *ctx = "this is mahou!"; //"fxp is very handsome!";
+    auto ctx_size = strlen(ctx);
+    MessageWrapper write_message{ctx_size};
+    msg = write_message.get();
+    msg->msg_type = xp::hton(message_type::msg);
+    msg->timestamp = xp::hton(std::time(0));
+    msg->from_id = xp::hton(userid);
+    msg->to_id = xp::hton(xp::roomid_type{10086});
+    msg->context_size = xp::hton(context_size_type{ctx_size});
 
-    p = (char *)&from_id;
-    res = write(fd, p, userid_size);
-    if (res != userid_size)
-        cout << "3 fail\n";
+    sleep(sleep_time);
+    std::copy_n(ctx, ctx_size, write_message.context_data());
+    res = write(fd, write_message.data(), write_message.size());
+    cout << "send num : " << res << endl;
+    test(res);
 
-    p = (char *)&to_id;
-    res = write(fd, p, roomid_size);
-    if (res != roomid_size)
-        cout << "4 fail\n";
+    sleep(sleep_time);
+    res = read(fd, login_message.data(), head_size);
+    cout << "recv num : " << res << endl;
+    test(res);
 
-    p = (char *)&password;
-    res = write(fd, p, userpassword_size);
-    if (res != userpassword_size)
-        cout << "5 fail\n";
+    ctx_size = login_message.context_size();
+    auto read_msg = MessageWrapper{ctx_size};
+    cout << "from_id : \n"
+         << xp::ntoh(login_message.get()->from_id) << endl;
+    copy_n(login_message.data(), head_size, read_msg.data());
 
-    sleep(3);
+    res = read(fd, read_msg.context_data(), ctx_size);
+    cout << "recv num : " << res << endl;
+    test(res);
 
-    constexpr int size = 10;
-    char sbuf[size] = "123456789";
-    char rbuf[size] = "87654321\0";
-
-    res = write(fd, sbuf, size);
-    if (res != size)
-        cout << "6 fail\n";
-
-    res = read(fd, rbuf, size);
-    if (res != size)
-        cout << "7 fail\n";
-    cout <<"recv : "<< rbuf << endl;
-
+    if (xp::ntoh(read_msg.get()->msg_type) == message_type::msg)
+    {
+        cout << "recv : \n"
+             << xp::ntoh(read_msg.get()->from_id) << " says : "
+             << string{read_msg.context_data(), ctx_size} << endl;
+    }
+    //sleep(5);
     close(fd);
-    if (res >= 0)
-        cout << "all success\n";
-    else
-        cout << "fail\n";
+    cout << "end\n";
 }

@@ -21,9 +21,8 @@ extern int sleep_time;
 extern thread_local int to_del_fd;
 extern xp::EventLoop &accept_loop;
 
-namespace xp
+namespace xp 
 {
-    
     struct EventAwaiter
     {
         xp::EventLoop *loop;
@@ -133,6 +132,47 @@ namespace xp
         co_return;
     }
 
+    using WriteReuseTask = BasicTask<BasicPromise>;
+    WriteReuseTask co_write_reuse(const int fd, char *&buf, size_t &num, int &output_result)
+    {
+        xp::log();
+        co_await std::suspend_always{};
+        while (buf)
+        {
+            auto result = ::send(fd, buf, num, MSG_DONTWAIT);
+            xp::log(fmt::format("send result={}", result));
+
+            if (result == num) [[likely]]
+            {
+                num -= result;
+                output_result = 1;
+                co_await std::suspend_always{};
+            }
+            else if (result <= 0)
+            {
+                xp::log(fmt::format("errno={}", errno));
+                if (errno == EINTR || errno == EWOULDBLOCK || errno == EAGAIN)
+                {
+                    output_result = 0;
+                    co_await std::suspend_always{};
+                }
+                else
+                {
+                    output_result = -1;
+                    co_await std::suspend_always{};
+                }
+            }
+            else if (result < num)
+            {
+                num -= result;
+                buf += num;
+                output_result = 0;
+                co_await std::suspend_always{};
+            }
+        }
+        xp::log();
+        co_return;
+    }
     
     
 }

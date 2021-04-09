@@ -1,11 +1,13 @@
-#ifndef NET_H_
-#define NET_H_
+#ifndef XP_NET_H_
+#define XP_NET_H_
 
 #include <fcntl.h>
 #include <unistd.h>
 #include <netinet/in.h>
 #include "logger.h"
 #include <cassert>
+#include <stdexcept>
+#include <exception>
 
 namespace xp
 {
@@ -24,6 +26,10 @@ namespace xp
 
     struct Acceptor
     {
+        int port;
+        int fd;
+        sockaddr_in addr;
+
         Acceptor(const int p = 8888)
             : port(p),
               fd(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP))
@@ -59,19 +65,18 @@ namespace xp
         {
             return ::listen(fd, backlog);
         }
-        std::tuple<int, sockaddr_in> accept() noexcept
+        /*std::tuple<int, sockaddr_in> accept() noexcept
         {
             sockaddr_in addr;
             socklen_t len = sizeof(addr);
             const int new_fd = ::accept(fd, (sockaddr *)&addr, &len);
             return {new_fd, addr};
-        }
-        int port;
-        int fd;
-        sockaddr_in addr;
+        }*/
+        
     };
 
-
+    
+    
 }
 
-#endif // !NET_H_
+#endif // !XP_NET_H_

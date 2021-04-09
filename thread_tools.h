@@ -14,6 +14,26 @@
 
 namespace xp
 {
+    class Defer
+    {
+        std::function<void()> func_;
+
+    public:
+        Defer(std::function<void()> f)
+            : func_{f}
+        {
+        }
+        ~Defer()
+        {
+            if (func_)
+                func_();
+        }
+        void relese()
+        {
+            func_ = {};
+        }
+    };
+
     template <typename Lock>
     concept lock_type = requires(Lock lc)
     {
@@ -171,9 +191,9 @@ namespace xp
         using value_type = Value;
         SwapBuffer() noexcept {}
         ~SwapBuffer() {}
-        
-        SwapBuffer(SwapBuffer&&sb) noexcept 
-            :lock_{}, get_buffer_{std::move(sb.get_buffer_)}, add_buffer_{std::move(sb.add_buffer_)}
+
+        SwapBuffer(SwapBuffer &&sb) noexcept
+            : lock_{}, get_buffer_{std::move(sb.get_buffer_)}, add_buffer_{std::move(sb.add_buffer_)}
         {
         }
         SwapBuffer &operator=(SwapBuffer &&sb) noexcept
@@ -184,7 +204,7 @@ namespace xp
         }
         SwapBuffer(const SwapBuffer &) = delete;
         SwapBuffer &operator=(const SwapBuffer &) = delete;
-        
+
         std::span<Value> get() noexcept
         {
             if (add_buffer_.empty())
@@ -192,7 +212,7 @@ namespace xp
             get_buffer_.clear();
             std::lock_guard lg{lock_};
             get_buffer_.swap(add_buffer_);
-            return  {get_buffer_.begin(),get_buffer_.end()};
+            return {get_buffer_.begin(), get_buffer_.end()};
         }
         void add(Value &&value) noexcept
         {
@@ -203,6 +223,7 @@ namespace xp
         {
             return add_buffer_.empty();
         }
+
     private:
         using Lock = xp::SpinLock;
         using Container = std::vector<Value>;

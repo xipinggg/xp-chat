@@ -222,7 +222,6 @@ namespace xp
                 sleep(sleep_time);
                 int num = epoller_.epoll(events, timeout);
                 log(fmt::format("epoll result : {}", num), "info");
-                //std::cout << std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()) <<std::endl;
                 for (int i = 0; i < num; ++i)
                 {
                     auto epevent = events[i];
@@ -231,16 +230,22 @@ namespace xp
                 do_tasks();
             }
         }
+
         int ctl(ctl_option option, int fd, epoll_event *event)
         {
             xp::log(fmt::format("option={}", option));
             return epoller_.ctl(option, fd, event);
         }
+        void commit_ctl(ctl_option option, int fd, epoll_event *event)
+        {
+            log();
+            
+        }
         void add_task(std::function<void()> task)
         {
             tasks_.add(std::move(task));
         }
-        bool wakeup()
+        bool wakeup() noexcept
         {
             xp::log();
             return eventfd_write(fd_, 1) >= 0;
@@ -271,6 +276,7 @@ namespace xp
         xp::SwapBuffer<task_type> tasks_;
         std::mutex mtx_;
         xp::Epoller epoller_;
+    public:
         event_handler_type event_handler_;
     };
 
@@ -288,15 +294,16 @@ namespace xp
         ~EventLoopManager()
         {
         }
-        EventLoop &select(const uint fd, uint &idx) noexcept
+        EventLoop *select(const uint fd, uint &idx) noexcept
         {
             idx = fd % loops_num_;
-            return loops_[idx];
+            return &loops_[idx];
         }
-        EventLoop &select(const int fd) noexcept
+        EventLoop *select(const int fd) noexcept
         {
+            log();
             const int idx = fd % loops_num_;
-            return loops_[idx];
+            return &loops_[idx];
         }
         EventLoop &operator[](const int idx)
         {
