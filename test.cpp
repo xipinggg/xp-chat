@@ -9,14 +9,14 @@ using namespace std;
 using namespace xp;
 
 thread_local int xp::to_del_fd;
-thread_local epoll_event th_epevent;
+thread_local epoll_event thread_epoll_event;
 
 int sleep_time = 2;
 
 xp::EventLoop::event_handler_type event_handler = [](epoll_event epevent) {
     xp::log();
     auto handle = std::coroutine_handle<>::from_address(epevent.data.ptr);
-    th_epevent = epevent;
+    thread_epoll_event = epevent;
     xp::to_del_fd = -1;
     handle.resume();
     if (handle.done())
@@ -24,7 +24,7 @@ xp::EventLoop::event_handler_type event_handler = [](epoll_event epevent) {
         xp::log();
         if (xp::to_del_fd >= 0)
         {
-            server->close_conn(xp::to_del_fd);
+            server->del_conn(xp::to_del_fd);
         }
     }
     else

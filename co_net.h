@@ -14,14 +14,16 @@
 #include "logger.h"
 #include "co.hpp"
 #include "event_manager.h"
+#include "co_sched.h"
 
 extern thread_local epoll_event thread_epoll_event;
 extern int sleep_time;
-extern xp::Scheduler *sched;
+
 
 extern thread_local int to_del_fd;
 extern xp::EventLoop accept_loop;
 extern xp::EventLoop main_loop;
+
 namespace xp
 {
     struct EventAwaiter
@@ -39,9 +41,9 @@ namespace xp
                 loop->commit_ctl(xp::EventLoop::del, fd, {});
                 auto handle = this->this_handle;
                 loop->add_task([handle]() {
-                    log("delete from sched", "info");
+                    log("delete handle from sched", "info");
                     std::unique_lock ul{sched->coro_states_mtx};
-                    sched->coro_states.erase(handle);
+                    sched->coro_states.erase(handle.address());
                 });
             }
         }
@@ -53,13 +55,14 @@ namespace xp
             this_handle = handle;
             if (!set && loop)
             {
+                log();
                 set = true;
                 const auto event = xp::make_epoll_event(epoll_data_t{.ptr = handle.address()});
                 loop->commit_ctl(xp::EventLoop::add, fd, event);
                 loop->add_task([handle]() {
-                    log("add to sched", "info");
+                    log("add handle to sched", "info");
                     std::unique_lock ul{sched->coro_states_mtx};
-                    sched->coro_states[handle] =
+                    sched->coro_states[handle.address()] =
                         std::make_unique<xp::CoroState>(handle);
                 });
             }
@@ -76,7 +79,7 @@ namespace xp
             co_return;
         }
         char *buf = static_cast<char *>(p);
-        xp::EventAwaiter awaiter{&main_loop, fd, false};
+        xp::EventAwaiter awaiter{&main_loop, fd};
         while (num)
         {
             auto read_result = ::recv(fd, buf, num, MSG_DONTWAIT);

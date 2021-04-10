@@ -22,7 +22,7 @@ namespace xp
 {
     enum
     {
-        default_epoll_events = EPOLLIN | EPOLLPRI | EPOLLHUP
+        default_epoll_events = EPOLLET | EPOLLIN | EPOLLPRI | EPOLLHUP
     };
     epoll_event make_epoll_event(const epoll_data_t data,
                                  const uint32_t events = default_epoll_events)
@@ -176,10 +176,10 @@ namespace xp
             del = EPOLL_CTL_DEL,
             mod = EPOLL_CTL_MOD,
         };
-        EventLoop()
+        /*EventLoop()
         {
             log();
-        }
+        }*/
         EventLoop(event_handler_type event_handler)
             : fd_{eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)}, event_handler_{event_handler}
         {
@@ -217,8 +217,9 @@ namespace xp
             if (fd_ >= 0)
                 ::close(fd_);
         }
-        void start(int timeout)
+        void start()
         {
+            int timeout = -1;
             log();
             std::vector<epoll_event> events(64);
             events.clear();
@@ -244,22 +245,27 @@ namespace xp
 
         void commit_ctl(const ctl_option option, const int fd, epoll_event event)
         {
-            log();
-            tasks_.add([option, fd, event, this]() {
+            log("commit_ctl");
+            auto task = [option, fd, event, this] {
                 auto e = event;
-                this->ctl(option, fd, &e);
-            });
+                this->ctl(option, fd, &e); };
+                
+            add_task(task);
         }
         void add_task(std::function<void()> task)
         {
+            log();
             tasks_.add(std::move(task));
             wakeup();
         }
+        
         bool wakeup() noexcept
         {
             xp::log();
-            return eventfd_write(fd_, 1) >= 0;
+            eventfd_t value = 1;
+            return eventfd_write(fd_, value) >= 0;
         }
+        /*
         auto on_wakeup()
         {
             xp::log();
@@ -267,16 +273,18 @@ namespace xp
             eventfd_read(fd_, &count);
             return count;
         }
+        */
         int fd() const noexcept { return fd_; }
 
     private:
         void do_tasks()
         {
+            log();
             if (tasks_.empty())
             {
                 return;
             }
-            auto tasks = tasks_.get();
+            auto &tasks = tasks_.get();
             log(fmt::format("tasks size={}", tasks.size()), "info");
             for (auto &task : tasks)
             {
@@ -326,7 +334,7 @@ namespace xp
         }
 
     private:
-        int loops_num_;
+        uint loops_num_;
         std::vector<EventLoop> loops_;
         std::mutex mtx_;
     };

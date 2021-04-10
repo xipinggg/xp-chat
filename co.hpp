@@ -228,10 +228,9 @@ namespace xp
         {
             {
                 xp::log(fmt::format("wakeup fd={}", fd));
-                if (eventfd_t count{0}; 0 < eventfd_read(fd, &count))
-                {
-                    co_return;
-                }
+                eventfd_t count{0};
+                eventfd_read(fd, &count);
+                xp::log(fmt::format("wakeup count={}", (uint)count));
             }
             co_await std::suspend_always{};
         }

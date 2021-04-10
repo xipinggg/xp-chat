@@ -25,6 +25,7 @@ namespace xp
 	class Server
 	{
 	public:
+		friend class xp::Singleton<Server>;
 		const xp::roomid_type default_roomid = 10086;
 		std::vector<xp::roomid_type> default_room{default_roomid};
 		/////////////
@@ -113,27 +114,23 @@ namespace xp
 			log();
 			std::cout << "conn address " << this << std::endl;
 			std::lock_guard lg{msg_lock};
-			//log();
-			log(fmt::format("messages size={}", messages.size()), "info");
 			messages.push(msg);
 			if (messages.size() == 1)
 			{
-				/*if (auto loop = loops.select(fd); loop)
-				{
-					auto handle = task.handle;
-					auto u = this->user;
-					auto ts = [u, handle, loop]() {
-						if (u->conn)
+				log();
+				auto handle = task.handle;
+				auto u = this->user;
+				auto ts = [u, handle]() {
+					if (u->conn)
+					{
+						if (!u->conn->is_messages_empty())
 						{
-							if (!u->conn->is_messages_empty())
-							{
-								th_epevent = epoll_event{0, epoll_data_t{.ptr = handle.address()} };
-								loop->event_handler_(th_epevent);
-							}
+							thread_epoll_event = epoll_event{0, epoll_data_t{.ptr = handle.address()}};
+							main_loop.event_handler_(thread_epoll_event);
 						}
-					};
-					loop->add_task(ts);
-				}*/
+					}
+				};
+				main_loop.add_task(ts);
 			}
 		}
 	};
@@ -314,8 +311,7 @@ namespace xp
 						//if msg has completed, get new msg
 						if (!conn->is_messages_empty())
 						{
-							log("!!!!get new msg");
-
+							log();
 							while (1)
 							{
 								log();
@@ -333,13 +329,9 @@ namespace xp
 						else if (events & EPOLLOUT) //set unoutable
 						{
 							log("set unoutable");
-							/*if (auto loop = loops.select(fd); loop) [[likely]]
-							{
-								log();
-								auto epevent = th_epevent;
-								epevent.events &= ~EPOLLOUT;
-								loop->ctl(xp::EventLoop::ctl_option::mod, fd, &epevent);
-							}*/
+							auto epevent = thread_epoll_event;
+							epevent.events &= ~EPOLLOUT;
+							main_loop.commit_ctl(xp::EventLoop::ctl_option::mod, fd, epevent);
 							break;
 						}
 					}
@@ -347,18 +339,14 @@ namespace xp
 					{
 						log("set outable");
 						//set outable
-						/*.select(fd); loop) [[likely]]
-						{
-							log();
-							auto epevent = th_epevent;
-							epevent.events &= EPOLLOUT;
-							loop->ctl(xp::EventLoop::ctl_option::mod, fd, &epevent);
-						}*/
+						auto epevent = thread_epoll_event;
+						epevent.events &= EPOLLOUT;
+						main_loop.commit_ctl(xp::EventLoop::ctl_option::mod, fd, epevent);
 						break;
 					}
 					else if (write_result == -1) //error
 					{
-						log("error", "error");
+						log("write error");
 						co_return;
 					}
 				}
@@ -382,9 +370,7 @@ namespace xp
 		log();
 		acceptor_.listen();
 		accept_task_ = co_accept(acceptor_.fd);
-		auto ptr = accept_task_.handle.address();
-		auto accept_event = xp::make_epoll_event(epoll_data_t{.ptr = ptr});
-		//loops[0].ctl(EventLoop::add, acceptor_.fd, &accept_event);
+		auto accept_event = xp::make_epoll_event(epoll_data_t{.ptr = accept_task_.handle.address()});
 		accept_loop.ctl(EventLoop::add, acceptor_.fd, &accept_event);
 
 		init_users();
@@ -457,7 +443,7 @@ namespace xp
 			auto from_id = xp::ntoh(msg->from_id);
 			auto to_id = xp::ntoh(msg->to_id);
 			log(fmt::format("from {} to {} says : {}", from_id, to_id, context), "info");
-			
+
 			auto room = this->get_room(to_id);
 			if (room) [[likely]]
 			{
