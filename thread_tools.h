@@ -105,6 +105,7 @@ namespace xp
         {
             while (thread_num--)
                 threads_.emplace_back([this] { this->loop(); });
+            start();
         }
         ~ThreadPool()
         {
@@ -205,14 +206,15 @@ namespace xp
         SwapBuffer(const SwapBuffer &) = delete;
         SwapBuffer &operator=(const SwapBuffer &) = delete;
 
-        std::span<Value> get() noexcept
+        auto get() noexcept
         {
-            if (add_buffer_.empty())
-                return {};
+            //if (add_buffer_.empty())
+            //    return get_buffer_;
             get_buffer_.clear();
             std::lock_guard lg{lock_};
             get_buffer_.swap(add_buffer_);
-            return {get_buffer_.begin(), get_buffer_.end()};
+            //return std::span<Value>{get_buffer_.begin(), get_buffer_.end()};
+            return std::span<Value>{get_buffer_.begin(), get_buffer_.end()};
         }
         void add(Value &&value) noexcept
         {

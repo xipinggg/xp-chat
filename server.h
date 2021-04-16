@@ -33,7 +33,7 @@ namespace xp
 		~Server();
 		BasicTask<> co_accept(const int fd);
 		User *try_login(xp::Connection *conn, xp::userid_type id, xp::userpassword_type password);
-		bool handle_message(xp::MessageWrapper msg_wrapper);
+		bool handle_message(xp::MessageWrapper msg_wrapper, xp::Connection *from_conn = nullptr);
 		void del_conn(int fd);
 		xp::Room *get_room(xp::roomid_type id);
 		xp::Acceptor acceptor_;
@@ -58,10 +58,9 @@ namespace xp
 		sockaddr_in addr;
 		xp::ConnTask task;
 		xp::User *user;
-
-		std::queue<xp::MessageWrapper> messages;
-		//xp::SpinLock msg_lock;
-		std::mutex msg_lock;
+		std::list<xp::MessageWrapper> messages;
+		//std::mutex msg_lock;
+		xp::SpinLock msg_lock;
 		bool state = true;
 
 		Connection(int f, sockaddr_in a);
@@ -100,34 +99,33 @@ namespace xp
 		xp::MessageWrapper get_message()
 		{
 			log();
-			std::cout << "conn address " << this << std::endl;
 			std::lock_guard lg{msg_lock};
 			//log();
 			log(fmt::format("messages size={}", messages.size()), "info");
 			auto msg = messages.front();
 			log(fmt::format("from_id={}", xp::hton(msg.get()->from_id)), "info");
-			messages.pop();
+			messages.pop_front();
 			return msg;
 		}
+		// &
 		void add_message(xp::MessageWrapper msg)
 		{
 			log();
-			std::cout << "conn address " << this << std::endl;
 			std::lock_guard lg{msg_lock};
-			messages.push(msg);
+			//log();
+			std::cout << "messages.size():" << messages.size() << std::endl;
+			messages.push_back(msg);
+			//messages.emplace_back(std::move(msg));
+			log();
 			if (messages.size() == 1)
 			{
 				log();
 				auto handle = task.handle;
-				auto u = this->user;
-				auto ts = [u, handle]() {
-					if (u->conn)
+				auto ts = [this, handle] {
+					if (!this->is_messages_empty())
 					{
-						if (!u->conn->is_messages_empty())
-						{
-							thread_epoll_event = epoll_event{0, epoll_data_t{.ptr = handle.address()}};
-							main_loop.event_handler_(thread_epoll_event);
-						}
+						thread_epoll_event = epoll_event{0, epoll_data_t{.ptr = handle.address()}};
+						main_loop.event_handler_(thread_epoll_event);
 					}
 				};
 				main_loop.add_task(ts);
@@ -137,12 +135,12 @@ namespace xp
 
 	ConnTask co_connection(Connection *conn)
 	{
+		log();
 		const int fd = conn->fd;
 		const sockaddr_in addr = conn->addr;
 
 		//delete conn from server
 		xp::Defer defer1{[fd, conn] {
-			xp::log("conn co_return");
 			conn->state = false;
 			if (conn->user) [[likely]]
 			{
@@ -157,12 +155,12 @@ namespace xp
 		{
 			constexpr int login_message_num = head_size + userpassword_size;
 			char login_buf[login_message_num];
-			bool login_read_result = false;
-			co_await co_read(fd, login_buf, login_message_num, login_read_result);
-
-			if (!login_read_result)
+			//bool login_read_result = false;
+			//co_await co_read(fd, login_buf, login_message_num, login_read_result);
+			int res = ::recv(fd, login_buf, login_message_num, MSG_WAITALL);
+			if (res != login_message_num) //if (!login_read_result)
 			{
-				log();
+				log("loggin error", "error");
 				co_return;
 			}
 			auto login_message = (Message *)login_buf;
@@ -173,12 +171,30 @@ namespace xp
 				log();
 				xp::userpassword_type password;
 				std::copy_n((char *)(&login_message->context), xp::userpassword_size, (char *)password);
-				xp::ntoh(password);
-				if (conn->user = server->try_login(conn, xp::ntoh(login_message->from_id), password);
+				if (conn->user = server->try_login(conn, xp::ntoh(login_message->from_id), xp::ntoh(password));
 					conn->user) [[likely]]
 				{
 					log("login success", "info");
-					std::cout << "conn address " << conn << std::endl;
+					std::string login_msg = fmt::format("{} login success.", conn->user->id);
+					//auto login_result_msg = make_msg(conn->fd, login_result, 0, server->default_roomid, login_msg);
+
+					MessageWrapper login_result_msg{login_msg.size()};
+					{
+						auto msg = login_result_msg.get();
+
+						msg->msg_type = xp::hton(login_result);
+						msg->timestamp = xp::hton(std::time(0));
+						msg->from_id = xp::hton(0);
+						msg->to_id = xp::hton(10086);
+
+						xp::context_size_type cs{login_msg.size()};
+						msg->context_size = xp::hton(cs);
+
+						std::copy_n(login_msg.data(), login_msg.size(), login_result_msg.context_data());
+					}
+
+					::send(fd, login_result_msg.data(), login_result_msg.size(), MSG_WAITALL);
+					server->handle_message(login_result_msg, conn);
 				}
 				else
 				{
@@ -380,6 +396,8 @@ namespace xp
 	void Server::init_users()
 	{
 		log();
+		//users_[2385] = std::make_unique<xp::User>(2385, "crh");
+		//users_[2386] = std::make_unique<xp::User>(2386, "fy");
 		users_[2387] = std::make_unique<xp::User>(2387, "mahou");
 		users_[2388] = std::make_unique<xp::User>(2388, "xp");
 	}
@@ -395,7 +413,6 @@ namespace xp
 			auto user = p.second.get();
 
 			xp::log(fmt::format("id={}", id)); //log
-			std::cout << "user address " << user << std::endl;
 			users.emplace(std::make_pair(id, user));
 		}
 	}
@@ -419,9 +436,7 @@ namespace xp
 			auto user = iter->second.get();
 			user->state = true;
 			user->conn = conn;
-			log("login conn", "info");
-			std::cout << "##conn address " << user->conn << std::endl;
-			std::cout << "##user address " << user << std::endl;
+
 			return user;
 		}
 		else
@@ -431,38 +446,71 @@ namespace xp
 		}
 	}
 	//imcomplete
-	bool Server::handle_message(xp::MessageWrapper msg_wrapper)
+	bool Server::handle_message(xp::MessageWrapper msg_wrapper, xp::Connection *from_conn)
 	{
-		log("handle_message");
+		log("handle message");
 		auto msg = msg_wrapper.get();
 		auto from_id = xp::ntoh(msg->from_id);
 		auto to_id = xp::ntoh(msg->to_id);
-		if (xp::ntoh(msg->msg_type) == xp::message_type::msg)
+		switch (xp::ntoh(msg->msg_type))
 		{
+		case xp::message_type::msg:
+		{
+			log();
 			auto context = std::string_view{msg->context, xp::ntoh(msg->context_size)};
 			auto from_id = xp::ntoh(msg->from_id);
 			auto to_id = xp::ntoh(msg->to_id);
 			log(fmt::format("from {} to {} says : {}", from_id, to_id, context), "info");
 
-			auto room = this->get_room(to_id);
-			if (room) [[likely]]
+			if (auto room = this->get_room(to_id); room) [[likely]]
 			{
 				for (auto &userdata : room->users)
 				{
 					auto user = userdata.second;
-					if (from_id != user->id && user->conn)
+					log(fmt::format("online userid : ", user->id), "info");
+					if (user->conn && from_id != user->id)
 					{
-						log();
+						log(fmt::format("add to {}", user->id), "info");
 						user->conn->add_message(msg_wrapper);
 					}
 				}
 				return true;
 			}
+			break;
+		}
+		case xp::message_type::login_result:
+		{
+			log();
+			auto context = std::string_view{msg->context, xp::ntoh(msg->context_size)};
+			auto from_id = xp::ntoh(msg->from_id);
+			auto to_id = xp::ntoh(msg->to_id);
+			log(fmt::format("from {} to {} says : {}", from_id, to_id, context), "info");
+
+			if (auto room = this->get_room(to_id); room) [[likely]]
+			{
+				for (auto &userdata : room->users)
+				{
+					auto user = userdata.second;
+					if (user->conn && from_conn->user->id != user->id)
+					{
+						log(fmt::format("online userid : ", user->id), "info");
+						log(fmt::format("add to {}", user->id), "info");
+						user->conn->add_message(msg_wrapper);
+					}
+				}
+				return true;
+			}
+			break;
+		}
+		case xp::message_type::logout:
+		{
+			log();
+			break;
+		}
 		}
 		return false;
 	}
 
-	//ok
 	BasicTask<> Server::co_accept(const int lisent_fd)
 	{
 		xp::log();
@@ -510,6 +558,8 @@ namespace xp
 		std::shared_lock lg{rooms_mtx_};
 		return rooms_[id].get();
 	}
+
+	/////////////////////////////////////////////
 
 }
 

@@ -284,7 +284,7 @@ namespace xp
             {
                 return;
             }
-            auto &tasks = tasks_.get();
+            auto tasks = tasks_.get();
             log(fmt::format("tasks size={}", tasks.size()), "info");
             for (auto &task : tasks)
             {
@@ -298,6 +298,7 @@ namespace xp
         xp::SwapBuffer<task_type> tasks_;
         std::mutex mtx_;
         xp::Epoller epoller_;
+        std::atomic<int> wakeup_count_;
 
     public:
         event_handler_type event_handler_;

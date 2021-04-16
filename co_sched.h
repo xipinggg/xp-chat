@@ -29,7 +29,11 @@ namespace xp
 		std::unordered_map<void*, std::unique_ptr<xp::CoroState>> coro_states;
 		std::shared_mutex coro_states_mtx;
 		xp::ThreadPool pool;
-
+		Scheduler()
+			:pool{0}
+		{
+			pool.start();
+		}
 		void event_handler(epoll_event epevent)
 		{
 			auto handle = std::coroutine_handle<>::from_address(epevent.data.ptr);
@@ -53,11 +57,11 @@ namespace xp
 				if (state->can_resume) [[likely]]
 				{
 					thread_epoll_event = epevent;
+					/*pool.add_task([handle] {
+						handle.resume();
+					});*/
 					handle.resume();
-					if (handle.done()) [[unlikely]]
-					{
-						xp::log();
-					}
+					
 				}
 				state->owning.unlock();
 			}

@@ -236,7 +236,8 @@ namespace xp
         }
     }
 
-    /*template <PromiseType promise_t = BasicPromise>
+/*
+    template <PromiseType promise_t = BasicPromise>
     struct AutoTask
     {
         using promise_type = promise_t;
@@ -264,13 +265,12 @@ namespace xp
         AutoTask(void *p)
             : handle{std::coroutine_handle<promise_type>::from_address(p)} {}
 
-        ~AutoDestroyTask()
+        ~AutoTask()
         {
-            if (requires FinalSuspendPromiseType<promise_type>)
+            if constexpr (requires FinalSuspendPromiseType<promise_type>)
             {
                 if (handle)
                 {
-                    log("handle destroy");
                     handle.destroy();
                 }
             }
@@ -302,7 +302,7 @@ namespace xp
         }
         coroutine_handle handle;
     };
-*/
+
     class CoManager
     {
     public:
@@ -318,7 +318,7 @@ namespace xp
         std::mutex mtx_;
         xp::SpinLock spin_lock_;
     };
-
+*/
     template <typename Value>
     class Channel
     {
