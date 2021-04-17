@@ -216,6 +216,11 @@ namespace xp
             //return std::span<Value>{get_buffer_.begin(), get_buffer_.end()};
             return std::span<Value>{get_buffer_.begin(), get_buffer_.end()};
         }
+        /*void add(Value value) noexcept
+        {
+            std::lock_guard lg{lock_};
+            add_buffer_.push_back(value);
+        }*/
         void add(Value &&value) noexcept
         {
             std::lock_guard lg{lock_};

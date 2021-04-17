@@ -16,7 +16,7 @@ using namespace std;
 using namespace xp;
 constexpr int sleep_time = 0;
 constexpr char server_ip[] = "127.0.0.1";
-constexpr int server_port = 8888;
+constexpr int server_port = 2100;
 
 int success_id = 0;
 int &fail_id = success_id;

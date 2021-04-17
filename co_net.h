@@ -32,7 +32,8 @@ namespace xp
         const int fd;
         bool set = false;
         std::coroutine_handle<> this_handle = std::noop_coroutine();
-        // delete fd from loop,delete corotinue from shed
+        // delete fd from loop
+        // delete corotinue from shed
         ~EventAwaiter()
         {
             log();

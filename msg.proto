@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+message ChatPassword {
+    string password = 1;
+}
+
+message ChatOnline {
+    uint32 userid = 1;
+    bool online = 2;
+}
+
+message ChatMessage {
+    uint32 message_type = 1;
+    uint64 timestamp = 2;
+    uint32 from_id = 3;
+    uint32 to_id = 4;
+    string password = 5;
+    //optional ChatPassword password = 5;
+    //repeated ChatOnline online_notice = 6;
+
+}

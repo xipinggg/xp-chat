@@ -12,7 +12,7 @@
                 "${fileDirname}/${fileBasenameNoExtension}",
                 "-fcoroutines",
                 "-pthread",
-                "-lfmt"
+                "-lfmt",
             ],
             "options": {
                 "cwd": "/usr/local/bin"

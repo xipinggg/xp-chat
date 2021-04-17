@@ -30,7 +30,7 @@ namespace xp
 		int fd;
 		sockaddr_in addr;
 
-		Acceptor(const int p = 8888)
+		Acceptor(const int p = 2100)
 			: port(p),
 			  fd(::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP))
 		{

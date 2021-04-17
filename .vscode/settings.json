@@ -87,6 +87,7 @@
         "cuchar": "cpp",
         "numbers": "cpp",
         "variant": "cpp",
-        "source_location": "cpp"
+        "source_location": "cpp",
+        "netfwd": "cpp"
     }
 }

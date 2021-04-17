@@ -103,17 +103,17 @@ namespace xp
 	struct MessageWrapper
 	{
 		std::shared_ptr<Message> ptr = {nullptr};
-		
+
 		MessageWrapper(const context_size_type context_size)
 			: ptr{static_cast<Message *>(::malloc(sizeof(Message) + context_size))}
 		{
 			ptr->context_size = xp::hton(context_size);
 		}
 		MessageWrapper(const MessageWrapper &) = default;
-		MessageWrapper&operator=(const MessageWrapper &) = default;
+		MessageWrapper &operator=(const MessageWrapper &) = default;
 
 		MessageWrapper(MessageWrapper &&) noexcept = default;
-		MessageWrapper&operator=(MessageWrapper &&) noexcept = default;
+		MessageWrapper &operator=(MessageWrapper &&) noexcept = default;
 		~MessageWrapper() = default;
 
 		Message *get() const noexcept
@@ -146,12 +146,16 @@ namespace xp
 		//char name[32];
 		Room(xp::roomid_type i) : id{i} {}
 		std::map<xp::messageid_type, xp::Message> messages;
+
 		std::atomic<xp::seqid_type> current_seq;
 		std::unordered_map<xp::userid_type, xp::User *> users;
+		xp::SwapBuffer<xp::User *> wait_add_users;
+		std::shared_mutex users_mtx;
 		xp::seqid_type get_seqid()
 		{
 			return current_seq++;
 		}
+		void add_wait_users();
 	};
 
 	struct User
@@ -162,6 +166,7 @@ namespace xp
 		xp::Connection *conn;
 		//non
 		std::vector<xp::roomid_type> rooms;
+
 		User(xp::userid_type i, std::string n)
 			: id{i}, name{n}, state{false}, conn{nullptr}, rooms{}
 		{
@@ -184,8 +189,19 @@ namespace xp
 		}
 	};
 
+	void xp::Room::add_wait_users()
+	{
+		auto waiters = wait_add_users.get();
+		log(fmt::format("add online users {}", waiters.size()));
+		std::unique_lock{users_mtx};
+		for (auto user : waiters)
+		{
+			users[user->id] = user;
+		}
+	}
+	
 	xp::MessageWrapper &&make_msg(int fd, message_type msg_type,
-			userid_type from_id, roomid_type to_id, std::string &context)
+								  userid_type from_id, roomid_type to_id, std::string &context)
 	{
 		MessageWrapper msg_wp{context.size()};
 		auto msg = msg_wp.get();
@@ -199,7 +215,7 @@ namespace xp
 		msg->context_size = xp::hton(cs);
 
 		std::copy_n(context.data(), context.size(), msg_wp.context_data());
-		
+
 		return std::move(msg_wp);
 	}
 } // namespace xp

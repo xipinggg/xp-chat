@@ -78,7 +78,8 @@ int main()
 	}
 	catch (...)
 	{
-		run = false; 
+		run = false;
+		logger->output();
 		cout << "------end-------\n";
 	}
 }
