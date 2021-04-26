@@ -6,7 +6,7 @@ using namespace xp;
 int main()
 {
 
-    int fd = get_fd();
+    int fd = -1;
 
     userid_type userid;
     cout << "请输入账号:\n";
@@ -20,6 +20,7 @@ int main()
         msg->from_id = xp::hton(userid);
         msg->to_id = xp::hton(0);
         msg->context_size = xp::hton(userpassword_size);
+        fd = get_fd();
         auto res = write(fd, msg_wp.data(), msg_wp.size());
 
         //res = write(fd, context.data(), context.size());
@@ -44,33 +45,5 @@ int main()
 
     close(fd);
 
-    // string password(userpassword_size, '0');
-    /*string str_password;
-    while (str_password.size() == 0 || str_password.size() > userpassword_size)
-    {
-        cout << "请输入密码:\n";
-        cin >> str_password;
-    }
-    copy_n(str_password.data(), str_password.size(), password.data());*/
-    //send_msg(fd, message_type::login, userid, 0, password);
-    /*cout << "---------start--------\n";
-    jthread re{[fd] {
-        while (1)
-        {
-            auto msg = recv_msg(fd);
-            cout << "recv one msg\n";
-            output(msg);
-        }
-    }};
-    int write_res = 1;
-    while (write_res >= 0)
-    {
-        string context;
-        //getline(cin, context);
-        cin >> context;
-        write_res = send_msg(fd, message_type::msg,
-                             userid, default_roomid, context);
-    }
-*/
     cout << "----------end----------\n";
 }

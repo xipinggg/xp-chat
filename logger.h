@@ -59,7 +59,7 @@ namespace xp
 
     constexpr bool log_filter(const std::string_view level) noexcept
     {
-        return false;
+        return level == "trace";
     }
 
     void log(const std::string_view message = "",
@@ -101,7 +101,7 @@ namespace xp
 			{
                 //if(level != "trace")
                 {
-                    std::cout << log;
+                    //std::cout << log;
                 }
                 logs_.add(std::move(log));
 				return true;
@@ -156,14 +156,9 @@ namespace xp
              const std::time_t t,
              const std::experimental::source_location location) noexcept
     {
-        /*
+        
         if (!log_filter(level))
-        {
-            if (auto log = make_log(message, level, t, location);
-                log != "")
-                fmt::print(log);
-        }*/
-        logger->commit(message, level, t, location);
+            logger->commit(message, level, t, location);
     }
 }
 

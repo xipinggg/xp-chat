@@ -10,64 +10,90 @@
 #include <atomic>
 
 extern xp::EventLoop main_loop;
-extern thread_local epoll_event thread_epoll_event;
-
+extern thread_local epoll_event local_epoll_event;
 
 namespace xp
 {
 	struct CoroState
 	{
-		std::coroutine_handle<> handle = std::noop_coroutine();
-		std::atomic<bool> running = false;
+		bool get_own()
+		{
+			return owning.try_lock();
+		}
+		void release_own()
+		{
+			owning.unlock();
+		}
+		bool is_can_resume()
+		{
+			return can_resume;
+		}
+		void set_can_resume()
+		{
+			can_resume = true;
+		}
+		void set_can_not_resume()
+		{
+			can_resume = false;
+		}
+
+	private:
 		std::atomic<bool> can_resume = true;
 		xp::SpinLock owning;
-		std::mutex run_mtx;
 	};
 
-	struct Scheduler
+	class Scheduler
 	{
-		std::unordered_map<void*, std::unique_ptr<xp::CoroState>> coro_states;
+		std::unordered_map<void *, std::unique_ptr<xp::CoroState>> coro_states;
 		std::shared_mutex coro_states_mtx;
 		xp::ThreadPool pool;
-		Scheduler()
-			:pool{0}
+	public:
+		xp::CoroState *get_coro_state(void *address)
 		{
-			pool.start();
+			std::shared_lock sl{coro_states_mtx};
+			if (auto p = coro_states.find(address);
+				p != coro_states.end()) [[likely]]
+			{
+				return p->second.get();
+			}
+			return nullptr;
+		}
+		void add_coro_state(void *address)
+		{
+			log("add_coro_state");
+			std::unique_lock sl{coro_states_mtx};
+			coro_states[address] = std::make_unique<CoroState>();
+		}
+		void del_coro_state(void *address)
+		{
+			log("del_coro_state");
+			std::unique_lock sl{coro_states_mtx};
+			if (auto iter = coro_states.find(address); iter != coro_states.end())
+			{
+				if (iter->second->get_own())
+					coro_states.erase(iter);
+			}
 		}
 		void event_handler(epoll_event epevent)
 		{
-			auto handle = std::coroutine_handle<>::from_address(epevent.data.ptr);
-			xp::CoroState *state;
+			//auto handle = std::coroutine_handle<>::from_address(epevent.data.ptr);
+			
+			if (xp::CoroState *state = get_coro_state(epevent.data.ptr);
+				state && state->get_own()) [[likely]]
 			{
-				std::shared_lock sl{coro_states_mtx};
-				auto p = coro_states.find(handle.address());
-				log();
-				if (p != coro_states.end()) [[likely]]
+				if (state->is_can_resume()) [[likely]]
 				{
-					log();
-					state = p->second.get();
+					local_epoll_event = epevent;
+					auto handle = std::coroutine_handle<>::from_address(epevent.data.ptr);
+					handle.resume();
 				}
 				else
 				{
-					return;
+					log("coro state can not resume", "error");
 				}
-			}
-			if (state->owning.try_lock()) [[likely]]
-			{
-				if (state->can_resume) [[likely]]
-				{
-					thread_epoll_event = epevent;
-					/*pool.add_task([handle] {
-						handle.resume();
-					});*/
-					handle.resume();
-					
-				}
-				state->owning.unlock();
+				state->release_own();
 			}
 		}
-
-		
 	};
 }
 //template<> xp::Scheduler xp::Singleton<xp::Scheduler>::instance_;

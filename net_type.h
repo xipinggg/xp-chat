@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <bit>
 #include <memory>
+#include "thread_tools.h"
+#include <fmt/format.h>
 namespace xp
 {
 	inline constexpr auto hton(auto m) noexcept
@@ -72,7 +74,6 @@ namespace xp
 		outline_users,
 		error,
 		parse_error,
-
 	};
 
 	/*constexpr auto messageid_size = sizeof(messageid_type);
@@ -140,22 +141,67 @@ namespace xp
 		}
 	};
 
-	struct Room
+	class Room
 	{
-		xp::roomid_type id;
-		//char name[32];
-		Room(xp::roomid_type i) : id{i} {}
-		std::map<xp::messageid_type, xp::Message> messages;
+		xp::roomid_type id_;
 
-		std::atomic<xp::seqid_type> current_seq;
-		std::unordered_map<xp::userid_type, xp::User *> users;
-		xp::SwapBuffer<xp::User *> wait_add_users;
-		std::shared_mutex users_mtx;
-		xp::seqid_type get_seqid()
+		std::map<xp::messageid_type, xp::Message> messages_;
+		std::unordered_map<xp::userid_type, xp::User *> users_;
+		std::unordered_map<xp::userid_type, xp::User *> online_users_;
+		xp::SwapBuffer<std::pair<xp::userid_type, xp::User *>> online_users_buf_;
+
+		std::shared_mutex users_mtx_;
+		std::shared_mutex online_users_mtx_;
+		xp::SpinLock msg_lock_;
+		//std::atomic<int> last_msg_id_;
+
+	public:
+		Room(xp::roomid_type id) : id_{id} {}
+		auto id() { return id_; }
+		auto last_msg_index()
 		{
-			return current_seq++;
+			std::lock_guard lg{msg_lock_};
+			return messages_.size() - 1;
 		}
-		void add_wait_users();
+		void add_msg(xp::MessageWrapper msg, userid_type not_add_id = 0);
+		auto get_msg(int index)
+		{
+			std::lock_guard lg{msg_lock_};
+			return messages_[index];
+		}
+		void add_user(xp::userid_type id, xp::User *user)
+		{
+			std::unique_lock ul{users_mtx_};
+			users_.insert(std::make_pair(id, user));
+		}
+		void del_user(userid_type id)
+		{
+			std::unique_lock ul{users_mtx_};
+			if (auto iter = users_.find(id); iter != users_.end())
+				users_.erase(iter);
+		}
+		auto online_users_do(std::function<void (User*)> func)
+		{
+			update_online_users();
+			std::shared_lock sl{online_users_mtx_};
+			for(auto u : online_users_)
+			{
+				func(u.second);
+			}
+			return online_users_.size();
+		}
+		void add_online_user(xp::userid_type id, xp::User *user)
+		{
+			online_users_buf_.add({id, user});
+		}
+		void del_outline_user(userid_type id)
+		{
+			update_online_users();
+			std::unique_lock{online_users_mtx_};
+			if (auto iter = online_users_.find(id); iter != online_users_.end())
+				online_users_.erase(iter);
+		}
+		void update_online_users();
 	};
 
 	struct User
@@ -164,46 +210,75 @@ namespace xp
 		std::string name;
 		bool state;
 		xp::Connection *conn;
-		//non
 		std::vector<xp::roomid_type> rooms;
-
-		User(xp::userid_type i, std::string n)
-			: id{i}, name{n}, state{false}, conn{nullptr}, rooms{}
+		xp::SwapBuffer<xp::MessageWrapper> messages;
+		//
+		User(xp::userid_type i, std::string n, xp::Connection *cn = nullptr)
+			: id{i}, name{n}, state{true}, conn{cn}, rooms{10086} {}
+		bool has_msg()
 		{
+			return !messages.empty();
 		}
-		User(const User &) = delete;
-		User &operator=(const User &) = delete;
-		User(User &&u) noexcept
-			: id{u.id}, name{std::move(u.name)},
-			  state{u.state}, conn{u.conn}, rooms{std::move(u.rooms)}
+		void add_msg(xp::MessageWrapper msg)
 		{
+			messages.add(std::move(msg));
 		}
-		User &operator=(User &&u) noexcept
+		auto get_msg()
 		{
-			id = u.id;
-			name = std::move(u.name);
-			state = u.state;
-			conn = u.conn;
-			rooms = std::move(u.rooms);
-			return *this;
+			return messages.get();
 		}
 	};
 
-	void xp::Room::add_wait_users()
+	void xp::Room::update_online_users()
 	{
-		auto waiters = wait_add_users.get();
-		log(fmt::format("add online users {}", waiters.size()));
-		std::unique_lock{users_mtx};
-		for (auto user : waiters)
+		if (online_users_buf_.empty())
+			return;
+		auto add_waiters = online_users_buf_.get();
+		std::unique_lock{online_users_mtx_};
+		for (auto user : add_waiters)
 		{
-			users[user->id] = user;
+			online_users_.insert(std::make_pair(user.first, user.second));
 		}
 	}
-	
-	xp::MessageWrapper &&make_msg(int fd, message_type msg_type,
-								  userid_type from_id, roomid_type to_id, std::string &context)
+	void xp::Room::add_msg(xp::MessageWrapper msg, userid_type not_add_id)
 	{
-		MessageWrapper msg_wp{context.size()};
+		std::shared_lock{users_mtx_};
+		for (auto &userdata : users_)
+		{
+			auto user = userdata.second;
+			if (user && not_add_id != user->id) [[likely]]
+			{
+				user->add_msg(msg);
+			}
+		}
+	}
+
+	inline std::tuple<char *, size_t> parse_recv_buf(
+		std::vector<xp::MessageWrapper> &msgs, char *buf, size_t num)
+	{
+		while (num >= head_size)
+		{
+			auto p = (xp::Message *)buf;
+			auto context_size = xp::ntoh(p->context_size);
+			auto msg = xp::MessageWrapper{context_size};
+			if (const auto msg_size = head_size + context_size; num >= msg_size)
+			{
+				std::copy_n(buf, msg_size, msg.data());
+				buf += msg_size;
+				num -= msg_size;
+				msgs.emplace_back(std::move(msg));
+			}
+			else
+			{
+				break;
+			}
+		}
+		return std::tuple{buf, num};
+	}
+	inline xp::MessageWrapper make_message(message_type msg_type, userid_type from_id,
+										   roomid_type to_id, std::string &context)
+	{
+		xp::MessageWrapper msg_wp{context.size()};
 		auto msg = msg_wp.get();
 
 		msg->msg_type = xp::hton(msg_type);
@@ -216,40 +291,8 @@ namespace xp
 
 		std::copy_n(context.data(), context.size(), msg_wp.context_data());
 
-		return std::move(msg_wp);
+		return msg_wp;
 	}
-} // namespace xp
-
-/*struct Message
-	{
-		//xp::messageid_type id;
-		xp::timestamp_type timestamp;
-		xp::userid_type from_id;
-		xp::roomid_type to_id;
-		xp::seqid_type seq;
-		xp::context_type context;
-		std::string_view context_view() const noexcept
-		{
-			return {context.begin() + head_size, context.end()};
-		}
-		static Message parse_context(std::string_view context);
-		static void make_context_head(Message &message)
-		{
-			auto &context = message.context;
-			to_recv_size_type to_recv_size = context.size() - to_recv_size_type_size;
-
-			auto index = 0;
-			std::copy_n((char *)&to_recv_size, to_recv_size_type_size, context.data() + index);
-			
-			index = to_recv_size_type_size;
-			std::copy_n((char *)&message.timestamp, timestamp_size, context.data() + index);
-		
-			index = userid_size;
-			std::copy_n((char *)&message.from_id, userid_size, context.data() + index);
-
-			index = roomid_size;
-			std::copy_n((char *)&message.to_id, roomid_size, context.data() + index);
-		}
-	};*/
+}
 
 #endif

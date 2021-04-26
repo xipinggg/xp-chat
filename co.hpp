@@ -144,7 +144,8 @@ namespace xp
             log();
             if constexpr (requires { handle.promise().waiter; })
             {
-                log();handle.promise().waiter = caller;
+                log();
+                handle.promise().waiter = caller;
             }
         }
         void await_resume() noexcept
@@ -214,7 +215,6 @@ namespace xp
         }
         void await_resume() noexcept
         {
- 
         }
 
         coroutine_handle handle;
@@ -236,27 +236,38 @@ namespace xp
         }
     }
 
-/*
+    BasicTask<> co_loop_func(std::function<bool()> func)
+    {
+        xp::log();
+        co_await std::suspend_always{};
+        while (true)
+        {
+            if (!func())
+                co_await std::suspend_always{};
+        }
+        co_return;
+    }
+
     template <PromiseType promise_t = BasicPromise>
     struct AutoTask
     {
         using promise_type = promise_t;
         using coroutine_handle = std::coroutine_handle<promise_type>;
+        coroutine_handle handle;
         AutoTask() noexcept : handle(nullptr) {}
 
         AutoTask(const AutoTask &) = delete;
         AutoTask &operator=(const AutoTask &) = delete;
-        AutoTask(AutoTask &&task) requires FinalSuspendPromiseType<promise_type> noexcept : handle{task.handle}
+        AutoTask(AutoTask &&task) noexcept
+            : handle{task.handle}
         {
             task.handle = nullptr;
         }
-        AutoTask &operator=(AutoTask &&task) requires FinalSuspendPromiseType<promise_type> noexcept
+        AutoTask &operator=(AutoTask &&task) noexcept
         {
             handle = task.handle;
             task.handle = nullptr;
         }
-        AutoTask(AutoTask &&) = default;
-        AutoTask &operator=(AutoTask &&) = default;
 
         AutoTask(coroutine_handle hd) noexcept
             : handle(hd) {}
@@ -267,7 +278,7 @@ namespace xp
 
         ~AutoTask()
         {
-            if constexpr (requires FinalSuspendPromiseType<promise_type>)
+            if constexpr (requires { FinalSuspendPromiseType<promise_type>; })
             {
                 if (handle)
                 {
@@ -300,7 +311,6 @@ namespace xp
         void await_resume() noexcept
         {
         }
-        coroutine_handle handle;
     };
 
     class CoManager
@@ -318,7 +328,7 @@ namespace xp
         std::mutex mtx_;
         xp::SpinLock spin_lock_;
     };
-*/
+
     template <typename Value>
     class Channel
     {

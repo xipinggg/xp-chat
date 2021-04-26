@@ -9,32 +9,35 @@
 using namespace std;
 using namespace xp;
 
+// add // user(room) -> corostate(sched) -> ctl(eventloop) -> conn(room)
+
+// del // user(room) -> corostate(sched) -> ctl(eventloop) -> conn(room)
+
+
 //Logger logger;
 //template <> xp::Logger xp::Singleton<Logger>::instance_;
-
+thread_local std::vector<char> local_recv_buf(1024);
 xp::Logger llgg;
 xp::Logger *logger = &llgg;
 xp::Server *server;
 
 int sleep_time = 0;
-thread_local int xp::to_del_fd;
 
-thread_local epoll_event thread_epoll_event;
+thread_local epoll_event local_epoll_event;
 
+//
 //template<> xp::Scheduler xp::Singleton<xp::Scheduler>::instance_;
 //auto sched = &xp::Singleton<xp::Scheduler>::get();
 
 auto main_event_handler = [](epoll_event epevent) {
-	xp::log("main_loop_event");
-	//sched->pool.add_task([epevent] { sched->event_handler(epevent); });
+	xp::log("main loop event");
 	sched->event_handler(epevent);
-	std::cout << "handles_num: " << sched->coro_states.size() << std::endl;
 };
 
 auto accept_event_handler = [](epoll_event epevent) {
-	xp::log("accept_loop_event");
+	xp::log("accept loop event");
 	auto handle = std::coroutine_handle<>::from_address(epevent.data.ptr);
-	thread_epoll_event = epevent;
+	local_epoll_event = epevent;
 	handle.resume();
 };
 
@@ -56,6 +59,7 @@ int main()
 			sleep(3);
 		}
 		logger->output();
+		run = true;
 	}};
 
 	try
@@ -69,9 +73,7 @@ int main()
 		auto main_event = xp::make_epoll_event(epoll_data_t{.ptr = main_loop_wakeup_task.handle.address()});
 		main_loop.ctl(EventLoop::add, main_loop.fd(), &main_event);
 
-		log("add to sched");
-		sched->coro_states[main_loop_wakeup_task.handle.address()] =
-			std::make_unique<xp::CoroState>(main_loop_wakeup_task.handle);
+		sched->add_coro_state(main_loop_wakeup_task.handle.address());
 
 		std::jthread accept_thread{&xp::EventLoop::start, &accept_loop};
 		main_loop.start();
@@ -79,6 +81,8 @@ int main()
 	catch (...)
 	{
 		run = false;
+		while(!run)
+			;
 		logger->output();
 		cout << "------end-------\n";
 	}
