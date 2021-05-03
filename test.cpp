@@ -49,6 +49,7 @@ xp::EventLoop accept_loop{accept_event_handler};
 xp::Server ss__;
 //&xp::Singleton<xp::Server>::get();
 
+
 int main()
 {
 	bool run = true;
@@ -82,7 +83,7 @@ int main()
 	{
 		run = false;
 		while(!run)
-			;
+			continue;
 		logger->output();
 		cout << "------end-------\n";
 	}

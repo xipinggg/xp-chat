@@ -33,12 +33,13 @@ namespace xp
 		~Server();
 		BasicTask<> co_accept(const int fd);
 
-		void resume_room_users(xp::Room *);
+		std::size_t resume_room_users(xp::Room *);
 		User *try_login(xp::Connection *, xp::userid_type, xp::userpassword_type);
 		bool handle_message(xp::MessageWrapper, xp::userid_type id = 0);
 
 		void on_user_login(xp::User *);
 		void on_user_logout(xp::User *);
+		bool on_conn_login(int, std::unique_ptr<Connection> &&);
 		void on_conn_logout(xp::Connection *);
 		xp::Connection *get_conn(int fd)
 		{
@@ -49,7 +50,8 @@ namespace xp
 			}
 			return nullptr;
 		}
-		void add_conn(int fd, std::unique_ptr<xp::Connection> conn)
+		void add_msg_to_room(xp::Room *, xp::MessageWrapper, xp::userid_type);
+		void add_conn(int fd, std::unique_ptr<xp::Connection> &&conn)
 		{
 			log(fmt::format("add conn {} to server", fd), "info");
 			std::unique_lock ul{conn_mtx_};
@@ -69,8 +71,22 @@ namespace xp
 		xp::BasicTask<> accept_task_;
 
 	private:
-		void init_users();
+		void init_users()
+		{
+			log();
+			users_[2385] = std::make_unique<xp::User>(2385, "crh");
+			users_[2386] = std::make_unique<xp::User>(2386, "fy");
+			users_[2387] = std::make_unique<xp::User>(2387, "mahou");
+			users_[2388] = std::make_unique<xp::User>(2388, "xp");
+			int id = 501;
+			while (--id)
+			{
+				users_[id] = std::make_unique<xp::User>(id, "test");
+			}
+		}
 		void init_rooms();
+		void init_conns();
+
 		std::unordered_map<int, std::unique_ptr<Connection>> connections_;
 		std::unordered_map<xp::userid_type, std::unique_ptr<xp::User>> users_;
 		std::unordered_map<xp::roomid_type, std::unique_ptr<xp::Room>> rooms_;
@@ -120,8 +136,7 @@ namespace xp
 
 			auto login_message = (Message *)login_buf;
 
-			if (auto msg_type = login_message->msg_type;
-				xp::ntoh(msg_type) == message_type::login)
+			if (auto msg_type = login_message->msg_type; xp::ntoh(msg_type) == message_type::login)
 			{
 				log();
 				xp::userpassword_type password;
@@ -133,8 +148,10 @@ namespace xp
 					std::string login_msg = fmt::format("{} login success.", conn->user->id);
 					log(login_msg, "info"); //
 					auto login_msg_wp = xp::make_message(login_result, 0, server->default_roomid, login_msg);
-					server->handle_message(login_msg_wp, conn->user->id);
-					::send(fd, login_msg_wp.data(), login_msg_wp.size(), MSG_WAITALL);
+
+					const auto id = conn->user->id;
+					main_loop.add_task([login_msg_wp, id] { server->handle_message(login_msg_wp, id); });
+					conn->user->add_msg(login_msg_wp);
 				}
 				else
 				{
@@ -151,8 +168,6 @@ namespace xp
 
 		conn->state = true;
 
-		// conn -> online user -> loop fd -> sched
-
 		xp::EventAwaiter awaiter{&main_loop, fd};
 
 		auto defer2_user = conn->user;
@@ -160,17 +175,42 @@ namespace xp
 			log();
 			server->on_user_logout(defer2_user);
 		}};
+
+		//write
+		xp::WritevData writev_data{.fd = fd};
+		std::vector<iovec> writev_iovec;
+		auto writev_task = xp::co_writev(writev_data);
+		{
+			auto msgs = conn->user->get_msg();
+			writev_iovec.reserve(msgs.size());
+			writev_iovec.clear();
+			size_t total_size = 0;
+			for (auto &msg : msgs)
+			{
+				writev_iovec.push_back({msg.data(), msg.size()});
+				total_size += msg.size();
+			}
+			writev_data.set(writev_iovec.data(), writev_iovec.size(), total_size);
+			writev_task.resume();
+			log(fmt::format("write_data.result={}", writev_data.result), "info");
+			if (writev_data.is_error()) [[unlikely]]
+			{
+				log("writev error", "error");
+				co_return;
+			}
+			else if (!writev_data.is_complete())
+			{
+				log("set outable");
+				awaiter.events &= EPOLLOUT;
+			}
+		}
+
 		xp::log("co_await awaiter to sched");
 		co_await awaiter;
 		log();
 		//read
 		xp::ReadAlwaysData read_data{.fd = conn->fd, .buf = local_recv_buf, .parser = xp::parse_recv_buf};
 		auto read_task = xp::co_read_always(read_data);
-
-		//write
-		xp::WritevData writev_data{.fd = fd};
-		std::vector<iovec> writev_iovec;
-		auto writev_task = xp::co_writev(writev_data);
 
 		bool flag = true;
 		while (flag)
@@ -223,10 +263,10 @@ namespace xp
 				}
 				//
 				writev_task.resume();
-				log(fmt::format("write_result={}", writev_data.result), "info");
+				log(fmt::format("write_data.result={}", writev_data.result), "info");
 				if (writev_data.is_error()) [[unlikely]] //error
 				{
-					log("writev error");
+					log("writev error", "error");
 					co_return;
 				}
 				if (writev_data.is_complete()) [[likely]] //complete
@@ -279,20 +319,7 @@ namespace xp
 
 		init_users();
 		init_rooms();
-	}
-
-	void Server::init_users()
-	{
-		log();
-		users_[2385] = std::make_unique<xp::User>(2385, "crh");
-		users_[2386] = std::make_unique<xp::User>(2386, "fy");
-		users_[2387] = std::make_unique<xp::User>(2387, "mahou");
-		users_[2388] = std::make_unique<xp::User>(2388, "xp");
-		int id = 501;
-		while (--id)
-		{
-			users_[id] = std::make_unique<xp::User>(id, "test");
-		}
+		init_conns();
 	}
 
 	void Server::init_rooms()
@@ -305,6 +332,15 @@ namespace xp
 		}
 	}
 
+	void Server::init_conns()
+	{
+		int i = 520;
+		while (--i)
+		{
+			connections_.insert(std::make_pair(i, std::unique_ptr<Connection>(nullptr)));
+		}
+		connections_.clear();
+	}
 	Server::~Server()
 	{
 		log();
@@ -315,26 +351,25 @@ namespace xp
 		log();
 		del_conn(conn->fd);
 	}
-
+	bool Server::on_conn_login(int fd, std::unique_ptr<Connection> &&conn)
+	{
+		log();
+		add_conn(fd, std::move(conn));
+	}
 	void Server::on_user_logout(xp::User *user)
 	{
-		int id = user->id;
 		log("del outline user from room");
 		if (!user)
-		{	
+		{
 			log("user invalid", "error");
+			return;
 		}
+		user->state = false;
+		user->conn = nullptr;
 		if (auto room = get_room(default_roomid); room)
 		{
 			room->del_outline_user(user->id);
 		}
-		user->state = false;
-		user->conn = nullptr;
-		std::string logout_msg = fmt::format("{} logout.", id);
-
-		auto logout_result_msg = xp::make_message(logout, 0, default_roomid, logout_msg);
-
-		handle_message(logout_result_msg, id);
 	}
 	void Server::on_user_login(xp::User *user)
 	{
@@ -359,35 +394,41 @@ namespace xp
 			std::shared_lock lg{users_mtx_};
 			if (auto iter = users_.find(id); iter != users_.end()) [[likely]]
 			{
-				log();
 				user = iter->second.get();
-				user->id = id;
+				user->state = true;
 				user->conn = conn;
 			}
 		}
 		on_user_login(user);
 		return user;
 	}
-	void Server::resume_room_users(xp::Room *room)
+	size_t Server::resume_room_users(xp::Room *room)
 	{
 		auto func = [](User *user) {
-			log(fmt::format("user id={}", user->id), "!!!");
-			
-			auto id = user->id;
+			if (!user->has_msg())
+				return;
+			log(fmt::format("user id={}", user->id));
+
 			auto handle = user->conn->task.handle;
 			epoll_data_t data{.ptr = handle.address()};
 			epoll_event epevent{.data = data};
-			auto task = [user, id, epevent] {
+			auto task = [user, epevent] {
 				if (!user->has_msg())
 					return;
-				log(fmt::format("user {} to writev msg", id), "!!!");
+				log(fmt::format("user {} to writev msg", user->id), "info");
 				main_loop.event_handler_(epevent);
 			};
 			main_loop.add_task(task);
 		};
-
-		auto num = room->online_users_do(func);
+		const auto num = room->online_users_do(func);
 		log(fmt::format("online users num={}", num), "info");
+		return num;
+	}
+	void Server::add_msg_to_room(xp::Room *room, xp::MessageWrapper msg, xp::userid_type from_userid)
+	{
+		log(fmt::format("add msg to room {}", room->id()), "info");
+		room->add_msg(msg, from_userid);
+		resume_room_users(room);
 	}
 	bool Server::handle_message(xp::MessageWrapper msg_wrapper, xp::userid_type from_userid)
 	{
@@ -395,25 +436,23 @@ namespace xp
 		auto msg = msg_wrapper.get();
 		auto from_id = xp::ntoh(msg->from_id);
 		auto to_id = xp::ntoh(msg->to_id);
+		auto context = std::string_view{msg->context, xp::ntoh(msg->context_size)};
+		log(fmt::format("from {} to {} says : {}", from_id, to_id, context), "info");
+
 		switch (xp::ntoh(msg->msg_type))
 		{
 		case xp::message_type::msg:
 		case xp::message_type::logout:
 		case xp::message_type::login_result:
 		{
-			auto context = std::string_view{msg->context, xp::ntoh(msg->context_size)};
-			auto from_id = xp::ntoh(msg->from_id);
-			auto to_id = xp::ntoh(msg->to_id);
-			log(fmt::format("from {} to {} says : {}", from_id, to_id, context), "info");
-
 			if (auto room = this->get_room(to_id); room) [[likely]]
 			{
-				log(fmt::format("add msg to room {}", room->id()), "info");
-				room->add_msg(msg_wrapper, from_userid);
-				resume_room_users(room);
+				add_msg_to_room(room, msg_wrapper, from_userid);
 			}
 			return true;
 		}
+		default:
+			return false;
 		}
 		return false;
 	}
@@ -432,8 +471,7 @@ namespace xp
 				if (auto conn = std::make_unique<Connection>(fd, addr);
 					conn->state) [[likely]]
 				{
-					log("conn is valid", "info");
-					server->add_conn(fd, std::move(conn));
+					on_conn_login(fd, std::move(conn));
 				}
 				else
 				{

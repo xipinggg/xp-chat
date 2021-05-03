@@ -5,7 +5,6 @@ using namespace xp;
 
 int main()
 {
-
     int fd = -1;
 
     userid_type userid;
@@ -23,7 +22,6 @@ int main()
         fd = get_fd();
         auto res = write(fd, msg_wp.data(), msg_wp.size());
 
-        //res = write(fd, context.data(), context.size());
         if (res != head_size + userpassword_size)
             cout << "login fail\n";
     }
@@ -35,12 +33,17 @@ int main()
         output(msg);
     } }};
 
+    cin.clear();
+    string msgctx;
+    //cin >> msg;
+    getline(cin, msgctx);
     while (1)
     {
-        string msg;
-        cin >> msg;
-        int res = send_msg(fd, message_type::msg, userid, default_roomid, msg);
-        cout << "send : " << msg << "  res : " << res << endl;
+        cin.clear();
+        //cin >> msg;
+        getline(cin, msgctx);
+        int res = send_msg(fd, message_type::msg, userid, default_roomid, msgctx);
+        cout << "##send num : " << res << endl;
     }
 
     close(fd);

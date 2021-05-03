@@ -180,11 +180,11 @@ namespace xp
 			if (auto iter = users_.find(id); iter != users_.end())
 				users_.erase(iter);
 		}
-		auto online_users_do(std::function<void (User*)> func)
+		auto online_users_do(std::function<void(User *)> func)
 		{
 			update_online_users();
 			std::shared_lock sl{online_users_mtx_};
-			for(auto u : online_users_)
+			for (auto u : online_users_)
 			{
 				func(u.second);
 			}
@@ -214,7 +214,7 @@ namespace xp
 		xp::SwapBuffer<xp::MessageWrapper> messages;
 		//
 		User(xp::userid_type i, std::string n, xp::Connection *cn = nullptr)
-			: id{i}, name{n}, state{true}, conn{cn}, rooms{10086} {}
+			: id{i}, name{n}, state{false}, conn{cn}, rooms{10086} {}
 		bool has_msg()
 		{
 			return !messages.empty();
@@ -242,13 +242,34 @@ namespace xp
 	}
 	void xp::Room::add_msg(xp::MessageWrapper msg, userid_type not_add_id)
 	{
-		std::shared_lock{users_mtx_};
-		for (auto &userdata : users_)
+		if (auto p = (Message *)msg.data(); 
+			xp::ntoh(p->msg_type) == message_type::msg)
 		{
-			auto user = userdata.second;
-			if (user && not_add_id != user->id) [[likely]]
+			log("","test");
+			std::shared_lock{users_mtx_};
+			for (auto &userdata : users_)
 			{
-				user->add_msg(msg);
+				auto user = userdata.second;
+				if (user && not_add_id != user->id) [[likely]]
+				{
+					user->add_msg(msg);
+				}
+			}
+		}
+		else
+		{
+			log("","test");
+			update_online_users();
+			std::shared_lock{online_users_mtx_};
+			for (auto &userdata : online_users_)
+			{
+				auto online_user = userdata.second;
+				log(fmt::format("online_user {}", online_user->id), "test");
+				if (online_user && not_add_id != online_user->id) [[likely]]
+				{
+					log(fmt::format("add to online_user {}", online_user->id), "test");
+					online_user->add_msg(msg);
+				}
 			}
 		}
 	}

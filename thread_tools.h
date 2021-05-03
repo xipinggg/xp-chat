@@ -77,7 +77,6 @@ namespace xp
         SpinLock() noexcept = default;
         SpinLock(SpinLock &&) = delete;
         SpinLock &operator=(SpinLock &&) = delete;
-
         SpinLock(const SpinLock &) = delete;
         SpinLock &operator=(const SpinLock &) = delete;
         void lock() noexcept
@@ -122,7 +121,7 @@ namespace xp
                 std::bind(std::forward<Function>(func), std::forward<Args>(args)...));
             {
                 std::lock_guard<std::mutex> lg{mtx_};
-                tasks_.emplace([task] { std::invoke(*task); std::cout << std::this_thread::get_id() << std::endl;std::this_thread::sleep_for(std::chrono::seconds(1)); });
+                tasks_.emplace([task] { std::invoke(*task);});
             }
             cond_.notify_one();
             return task->get_future();

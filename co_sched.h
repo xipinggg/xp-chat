@@ -46,8 +46,12 @@ namespace xp
 	{
 		std::unordered_map<void *, std::unique_ptr<xp::CoroState>> coro_states;
 		std::shared_mutex coro_states_mtx;
-		xp::ThreadPool pool;
+		//xp::ThreadPool pool;
+
 	public:
+		Scheduler()
+		{
+		}
 		xp::CoroState *get_coro_state(void *address)
 		{
 			std::shared_lock sl{coro_states_mtx};
@@ -76,8 +80,29 @@ namespace xp
 		}
 		void event_handler(epoll_event epevent)
 		{
-			//auto handle = std::coroutine_handle<>::from_address(epevent.data.ptr);
-			
+			/*auto task = [this, epevent] {
+			if (xp::CoroState *state = this->get_coro_state(epevent.data.ptr);
+				state && state->get_own()) [[likely]]
+			{
+				if (state->is_can_resume()) [[likely]]
+				{
+					local_epoll_event = epevent;
+					auto handle = std::coroutine_handle<>::from_address(epevent.data.ptr);
+					handle.resume();
+				}
+				else
+				{
+					log("coro state can not resume", "error");
+				}
+				state->release_own();
+			} 
+			struct timeval tv;
+    		gettimeofday(&tv, NULL);
+			log(fmt::format("end s={}",tv.tv_sec), "info");
+			log(fmt::format("end ms={}",tv.tv_usec / 1000), "info");
+			};
+			pool.add_task(task);*/
+
 			if (xp::CoroState *state = get_coro_state(epevent.data.ptr);
 				state && state->get_own()) [[likely]]
 			{

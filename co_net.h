@@ -32,6 +32,7 @@ namespace xp
 		const int fd;
 		bool set = false;
 		std::coroutine_handle<> this_handle = std::noop_coroutine();
+		uint32_t events = default_epoll_events;
 		// delete fd from loop
 		// delete corotinue from shed
 		~EventAwaiter()
@@ -53,7 +54,7 @@ namespace xp
 				log("add coro_state to shed, add fd to loop", "info");
 				set = true;
 				sched->add_coro_state(handle.address());
-				auto event = xp::make_epoll_event(epoll_data_t{.ptr = handle.address()});
+				auto event = xp::make_epoll_event(epoll_data_t{.ptr = handle.address()}, events);
 				loop->ctl(xp::EventLoop::add, fd, &event);
 			}
 		}
@@ -222,7 +223,6 @@ namespace xp
 
 	using ReadTask = BasicTask<AwaitedPromise>;
 	ReadTask co_read_always(ReadAlwaysData &data)
-	
 	{
 		xp::log();
 

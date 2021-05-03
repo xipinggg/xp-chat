@@ -20,7 +20,7 @@
 extern int sleep_time;
 namespace xp
 {
-	enum
+	enum : uint32_t
 	{
 		default_epoll_events = EPOLLET | EPOLLIN | EPOLLPRI | EPOLLHUP
 	};
@@ -193,9 +193,16 @@ namespace xp
 			events.clear();
 			while (true)
 			{
-				sleep(sleep_time);
-
+				//sleep(sleep_time);
+				/*struct timeval tv;
+    			gettimeofday(&tv, NULL);
+				log(fmt::format("end s={}",tv.tv_sec), "info");
+				log(fmt::format("end ms={}",tv.tv_usec / 1000), "info");*/
 				int num = epoller_.epoll(events, timeout);
+				/*gettimeofday(&tv, NULL);
+				log(fmt::format("start s={}",tv.tv_sec), "info");
+				log(fmt::format("start ms={}",tv.tv_usec / 1000), "info");*/
+
 				log(fmt::format("epoll result : {}", num), "info");
 				for (int i = 0; i < num; ++i)
 				{
@@ -203,6 +210,7 @@ namespace xp
 					event_handler_(epevent);
 				}
 				do_tasks();
+				
 			}
 		}
 
@@ -225,9 +233,11 @@ namespace xp
 		}
 		void add_task(std::function<void()> task)
 		{
-			log("add task");
+			log("add task","info");
 			tasks_.add(std::move(task));
-			if (wakeup_count_.fetch_add(1) == 1)
+			const auto cnt = wakeup_count_.fetch_add(1);
+			log(fmt::format("wakeup_count={}", cnt),"info");
+			if (cnt == 0)
 			{
 				wakeup();
 			}
@@ -244,14 +254,11 @@ namespace xp
 	private:
 		void do_tasks()
 		{
-			auto count = wakeup_count_.exchange(0);
+			const auto count = wakeup_count_.exchange(0);
 			log(fmt::format("wakeup_count_={}", count), "info");
 
-			if (count == 0)
-			{
-				return;
-			}
 			auto tasks = tasks_.get();
+			
 			for (auto task : tasks)
 			{
 				task();
@@ -263,7 +270,7 @@ namespace xp
 		std::vector<epoll_event> events_;
 		xp::SwapBuffer<task_type> tasks_;
 		xp::Epoller epoller_;
-		std::atomic<int> wakeup_count_;
+		std::atomic<int> wakeup_count_ {0};
 
 	public:
 		event_handler_type event_handler_;
